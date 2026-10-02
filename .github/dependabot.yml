@@ -1,0 +1,45 @@
+version: 2
+updates:
+  # 1) GitHub Actions (Workflows)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"
+    labels: ["dependencies", "github-actions"]
+    groups:
+      gh-actions:
+        patterns: ["*"]   # group all GitHub Actions updates in one PR
+
+  # 2) Docker (Dockerfiles + docker-compose.*)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:15"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    rebase-strategy: "auto"
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "deps(docker)"
+      include: "scope"
+    # Optional: limit major version updates; adjust for this repository as needed
+    # ignore:
+    #   - dependency-name: "debian"
+    #     update-types: ["version-update:semver-major"]
+    #   - dependency-name: "ubuntu"
+    #     update-types: ["version-update:semver-major"]
+    # Group updates to avoid a separate PR for each dependency
+    groups:
+      debian-ubuntu-base:
+        patterns: ["debian", "ubuntu"]
+      minimalist-base:
+        patterns: ["alpine", "busybox"]
+      ghcr-images:
+        patterns: ["ghcr.io/*"]

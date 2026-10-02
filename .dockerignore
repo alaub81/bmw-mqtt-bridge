@@ -1,14 +1,14 @@
+.git
 .env
-data
-site/
 .env.*
 !.env.example
+data/
 secrets/
+site/
 **/id_token.txt
 **/refresh_token.txt
 **/access_token.txt
 **/token_refresh_response.json
-__pycache__/
 **/id_token
 **/refresh_token
 .lint-venv/

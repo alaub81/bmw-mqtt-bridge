@@ -43,28 +43,33 @@
 //       $(pkg-config --cflags --libs libmosquitto) -lcurl
 //
 // Runtime configuration (env overrides):
-//   CLIENT_ID        : BMW CarData client ID (GUID)              (required; no default)
-//   GCID             : BMW GCID / username for the MQTT broker   (required; no default)
+//   BMW_CLIENT_ID        : BMW CarData client ID (GUID)              (required; no default)
+//   BMW_GCID             : BMW BMW_GCID / username for the MQTT broker   (required; no default)
 //   BMW_HOST         : customer.streaming-cardata.bmwgroup.com   (default: set)
 //   BMW_PORT         : 9000                                      (default: 9000)
-//   LOCAL_HOST       : 127.0.0.1                                 (default: 127.0.0.1)
-//   LOCAL_PORT       : 1883                                      (default: 1883)
-//   LOCAL_PREFIX     : bmw/                                      (default: bmw/)
-//   LOCAL_USER       : (optional)
-//   LOCAL_PASSWORD   : (optional)
-//   SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
-//   STATUS_STABLE_DELAY : seconds until bmw/status goes to false false (default: 5; 0 = immediately)
+//   MQTT_LOCAL_HOST       : 127.0.0.1                                 (default: 127.0.0.1)
+//   MQTT_LOCAL_PORT       : 1883                                      (default: 1883)
+//   MQTT_LOCAL_PREFIX     : bmw/                                      (default: bmw/)
+//   MQTT_LOCAL_BMW_CLIENT_ID  : local MQTT client ID (empty = generated ID)
+//   MQTT_LOCAL_USER       : (optional)
+//   MQTT_LOCAL_PASSWORD   : (optional)
+//   MQTT_LOCAL_TLS        : true/false (default false); encrypt local MQTT
+//   MQTT_LOCAL_TLS_VERIFY : true/false (default true); verify certificate chain and hostname
+//   MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
+//   MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
+//   BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false false (default: 5; 0 = immediately)
 //
 //
-// Token / .env location (fixed):
-//   XDG:  $XDG_STATE_HOME/bmw-mqtt-bridge/.env
+// BMW_LOAD_ENV_FILE: 0 disables the legacy .env loader (Docker default).
+// Token / legacy .env location:
+//   Explicit state directory: $XDG_STATE_HOME/.env (Docker: /app/conf/.env)
 //   Fallback: $HOME/.local/state/bmw-mqtt-bridge/.env
 //   Token files are expected in the same directory:
-//     id_token.txt, refresh_token.txt, access_token.txt
+//     id_token, refresh_token, access_token.txt
 //
 // Notes:
 //   - id_token (a JWT) is used as the MQTT password; we parse its 'exp' to know validity.
-//   - Files written by this program use permissions 0644.
+//   - Files written by this program use permissions 0600.
 //
 // ------------------------------------------------------------------------
 
@@ -73,10 +78,15 @@
 #include <random>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cctype>
+#include <stdexcept>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
 #include <thread>
 #include <vector>
 #include <string>
@@ -112,6 +122,14 @@ static int env_int(const char* key, int defv){
         return defv;
     }
 }
+static bool env_switch(const char* key, bool default_value) {
+    std::string value = env_str(key, default_value ? "true" : "false");
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "true") return true;
+    if (value == "false") return false;
+    throw std::invalid_argument(std::string(key) + " must be true or false");
+}
 static std::string trim_copy(const std::string& s){
     auto isws = [](unsigned char c){ return c=='\n'||c=='\r'||c=='\t'||c==' '; };
     size_t a=0,b=s.size();
@@ -134,23 +152,24 @@ static void load_env_file(const std::string& path=".env"){
         if(val.size()>=2 && ((val.front()=='"' && val.back()=='"') || (val.front()=='\'' && val.back()=='\''))){
             val = val.substr(1, val.size()-2);
         }
-        if(!key.empty()) setenv(key.c_str(), val.c_str(), 1);
+        if(!key.empty()) setenv(key.c_str(), val.c_str(), 0);
     }
 }
 
 // ===================== Configuration =====================
-static std::string CLIENT_ID;
-static std::string GCID;
+static std::string BMW_CLIENT_ID;
+static std::string BMW_GCID;
 static std::string BMW_HOST;
 static int         BMW_PORT;
-static std::string LOCAL_HOST;
-static int         LOCAL_PORT;
-static std::string LOCAL_PREFIX;
-static std::string LOCAL_USER;
-static std::string LOCAL_PASSWORD;
-static std::string LOCAL_STATUS_TOPIC;
-static int         SPLIT_TOPICS = 0;
-static int         STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
+static std::string MQTT_LOCAL_HOST;
+static int         MQTT_LOCAL_PORT;
+static std::string MQTT_LOCAL_PREFIX;
+static std::string MQTT_LOCAL_BMW_CLIENT_ID;
+static std::string MQTT_LOCAL_USER;
+static std::string MQTT_LOCAL_PASSWORD;
+static std::string MQTT_LOCAL_STATUS_TOPIC;
+static int         MQTT_SPLIT_TOPICS = 0;
+static int         BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
 static std::string ID_TOKEN_FILE;
 static std::string REFRESH_TOKEN_FILE;
 static int         MQTT_RETAIN = 0; // 0 = no retain (default), 1 = retain
@@ -163,8 +182,16 @@ static std::atomic<long> g_id_token_exp{0};
 
 static mosquitto* g_bmw = nullptr;
 static mosquitto* g_local = nullptr;
+// Serialize publishing and pointer replacement, but never hold this while joining a loop thread.
+static std::mutex g_MQTT_LOCAL_mutex;
 
 static std::atomic<bool> g_connected{false};
+static std::atomic<bool> g_MQTT_LOCAL_connected{false};
+static std::atomic<bool> g_status_resend{false};
+static std::mutex g_shutdown_mutex;
+static std::condition_variable g_shutdown_condition;
+static int g_shutdown_mid = 0;
+static bool g_shutdown_acknowledged = false;
 static std::atomic<long> g_last_connect_attempt{0};
 static std::atomic<long> g_next_connect_after{0}; // backoff fence for (re)connects
 
@@ -172,6 +199,37 @@ static std::mt19937 rng{std::random_device{}()};
 static long jitter_ms(long base_ms){ std::uniform_int_distribution<int> d(-250,250); return base_ms + d(rng); }
 
 // ===================== Helpers =====================
+// MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.
+// Configure only the local client; BMW always retains its existing TLS policy.
+static bool configure_MQTT_LOCAL_tls(mosquitto* client) {
+    try {
+        if (!env_switch("MQTT_LOCAL_TLS", false)) return true;
+        const bool verify = env_switch("MQTT_LOCAL_TLS_VERIFY", true);
+        const std::string ca_file = env_str("MQTT_LOCAL_TLS_CA_FILE",
+                                           "/etc/ssl/certs/ca-certificates.crt");
+        int rc = mosquitto_tls_set(client, ca_file.c_str(), nullptr,
+                                   nullptr, nullptr, nullptr);
+        if (rc == MOSQ_ERR_SUCCESS) {
+            // cert_reqs: 1 = verify the certificate chain, 0 = no verification.
+            rc = mosquitto_tls_opts_set(client, verify ? 1 : 0, nullptr, nullptr);
+        }
+        if (rc == MOSQ_ERR_SUCCESS) {
+            rc = mosquitto_tls_insecure_set(client, !verify);
+        }
+        if (rc != MOSQ_ERR_SUCCESS) {
+            std::cerr << "[bridge] local TLS configuration failed: "
+                      << mosquitto_strerror(rc) << '\n';
+            return false;
+        }
+        std::cerr << "[bridge] local MQTT TLS enabled; certificate verification "
+                  << (verify ? "true" : "false") << '\n';
+        return true;
+    } catch (const std::invalid_argument& error) {
+        std::cerr << "[bridge] " << error.what() << '\n';
+        return false;
+    }
+}
+
 // Helper: dirname
 static std::string dirname_of(const std::string& p){
     std::filesystem::path pp(p);
@@ -179,14 +237,25 @@ static std::string dirname_of(const std::string& p){
     return d.empty() ? std::string(".") : d.string();
 }
 
-// XDG-style token directory for current user
+// Explicit state directory, with a user-specific fallback.
 static std::string token_dir() {
     const char* xdg = std::getenv("XDG_STATE_HOME");
     const char* home = std::getenv("HOME");
-    if (xdg && *xdg) return std::string(xdg) + "/bmw-mqtt-bridge";
+    if (xdg && *xdg) return std::string(xdg);
     if (home && *home) return std::string(home) + "/.local/state/bmw-mqtt-bridge";
     // very rare fallback (no HOME): stay relative but consistent
     return std::string("./.local/state/bmw-mqtt-bridge");
+}
+
+// Local liveness heartbeat; independent of MQTT connection state.
+static bool write_heartbeat(const std::string& path) {
+    if (path.empty()) return true;
+    const std::string temporary = path + ".tmp";
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output) return false;
+    output << static_cast<long>(time(nullptr)) << ' ' << ::getpid() << '\n';
+    output.close();
+    return !output.fail() && std::rename(temporary.c_str(), path.c_str()) == 0;
 }
 
 // helper: simple placeholder check for 1111-IDs
@@ -214,21 +283,34 @@ static void bmw_full_reconnect(){
     std::cerr << "[bridge] rebuild+connect rc=" << rc << "\n";
 }
 
-// Debounced status publisher for LOCAL_STATUS_TOPIC
+// Debounced status publisher for MQTT_LOCAL_STATUS_TOPIC
 static void publish_status(bool connected) {
+    static std::mutex status_mutex;
+    std::lock_guard<std::mutex> lock(status_mutex);
     static long  disconnected_since = 0;   // 0 = not currently timing
     static bool  last_published     = false;
     static bool  initialized        = false;
 
-    if (!g_local) return;
+    std::lock_guard<std::mutex> MQTT_LOCAL_lock(g_MQTT_LOCAL_mutex);
+    if (!g_local || !g_MQTT_LOCAL_connected.load()) return;
+    if (g_status_resend.exchange(false)) {
+        initialized = false;
+        disconnected_since = 0;
+    }
 
     auto do_publish = [&](bool val){
         json j;
         j["connected"] = val;
         j["timestamp"] = static_cast<long>(time(nullptr));
         std::string payload = j.dump();
-        mosquitto_publish(g_local, nullptr, LOCAL_STATUS_TOPIC.c_str(),
-                          payload.size(), payload.data(), 0, true);
+        const int rc = mosquitto_publish(g_local, nullptr, MQTT_LOCAL_STATUS_TOPIC.c_str(),
+                                        payload.size(), payload.data(), 0, true);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            std::cerr << "[bridge] status publish failed: " << mosquitto_strerror(rc) << '\n';
+            return;
+        }
+        std::cerr << "[bridge] status publish queued: " << MQTT_LOCAL_STATUS_TOPIC
+                  << " connected=" << (val ? "true" : "false") << '\n';
         last_published = val;
         initialized = true;
     };
@@ -242,7 +324,7 @@ static void publish_status(bool connected) {
     }
 
     // connected == false
-    if (STATUS_STABLE_DELAY == 0) {
+    if (BMW_STATUS_STABLE_DELAY == 0) {
         if (!initialized || last_published != false) {
             do_publish(false); // sofort auf false
         }
@@ -251,9 +333,40 @@ static void publish_status(bool connected) {
     }
     long now = time(nullptr);
     if (disconnected_since == 0) { disconnected_since = now; return; }
-    if ((now - disconnected_since) >= STATUS_STABLE_DELAY && (!initialized || last_published != false)) {
+    if ((now - disconnected_since) >= BMW_STATUS_STABLE_DELAY && (!initialized || last_published != false)) {
         do_publish(false); // nach Delay auf false
     }
+}
+
+// Wait for the broker to acknowledge the retained offline status before disconnecting.
+static void on_MQTT_LOCAL_publish(struct mosquitto*, void*, int mid) {
+    std::lock_guard<std::mutex> lock(g_shutdown_mutex);
+    if (g_shutdown_mid != 0 && mid == g_shutdown_mid) {
+        g_shutdown_acknowledged = true;
+        g_shutdown_condition.notify_all();
+    }
+}
+
+static bool publish_shutdown_status() {
+    std::lock_guard<std::mutex> MQTT_LOCAL_lock(g_MQTT_LOCAL_mutex);
+    if (!g_local || !g_MQTT_LOCAL_connected.load()) return false;
+    json status = {{"connected", false}, {"timestamp", static_cast<long>(time(nullptr))}};
+    const std::string payload = status.dump();
+    // Hold the mutex while setting the message ID to avoid a fast callback race.
+    std::unique_lock<std::mutex> lock(g_shutdown_mutex);
+    g_shutdown_mid = 0;
+    g_shutdown_acknowledged = false;
+    const int rc = mosquitto_publish(g_local, &g_shutdown_mid, MQTT_LOCAL_STATUS_TOPIC.c_str(),
+                                    payload.size(), payload.data(), 1, true);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << "[bridge] shutdown status publish failed: " << mosquitto_strerror(rc) << '\n';
+        return false;
+    }
+    const bool acknowledged = g_shutdown_condition.wait_for(lock, std::chrono::seconds(2), [] {
+        return g_shutdown_acknowledged;
+    });
+    std::cerr << "[bridge] shutdown status " << (acknowledged ? "acknowledged" : "timed out") << '\n';
+    return acknowledged;
 }
 
 static std::string read_file(const std::string& path) {
@@ -335,6 +448,113 @@ static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* userdata
 }
 
 // ===================== MQTT Callbacks =====================
+static void on_MQTT_LOCAL_connect(struct mosquitto*, void*, int rc) {
+    g_MQTT_LOCAL_connected = (rc == 0);
+    if (rc == 0) g_status_resend = true;
+    std::cerr << "[bridge] local MQTT CONNACK rc=" << rc
+              << " (" << mosquitto_connack_string(rc) << ")\n";
+}
+
+static void on_MQTT_LOCAL_disconnect(struct mosquitto*, void*, int rc) {
+    g_MQTT_LOCAL_connected = false;
+    std::cerr << "[bridge] local MQTT disconnected rc=" << rc
+              << " (" << mosquitto_strerror(rc) << ")\n";
+}
+
+static void on_MQTT_LOCAL_log(struct mosquitto*, void*, int level, const char* message) {
+    if (!message) return;
+    if ((level & (MOSQ_LOG_ERR | MOSQ_LOG_WARNING)) || std::strstr(message, "sending CONNECT")) {
+        std::cerr << "[local/log] level=" << level << " " << message << '\n';
+    }
+}
+
+// Shared by raw telemetry, split fields and status publishers during client replacement.
+static int publish_local(const std::string& topic, const std::string& payload, bool retain) {
+    std::lock_guard<std::mutex> lock(g_MQTT_LOCAL_mutex);
+    if (!g_local || !g_MQTT_LOCAL_connected.load()) return MOSQ_ERR_NO_CONN;
+    return mosquitto_publish(g_local, nullptr, topic.c_str(), payload.size(), payload.data(), 0, retain);
+}
+
+// Local MQTT lifecycle and watchdog; only the main thread creates or retires clients.
+static mosquitto* create_MQTT_LOCAL_client() {
+    mosquitto* client = mosquitto_new(MQTT_LOCAL_BMW_CLIENT_ID.empty() ? nullptr : MQTT_LOCAL_BMW_CLIENT_ID.c_str(),
+                                     true, nullptr);
+    if (!client) return nullptr;
+    mosquitto_connect_callback_set(client, on_MQTT_LOCAL_connect);
+    mosquitto_disconnect_callback_set(client, on_MQTT_LOCAL_disconnect);
+    mosquitto_publish_callback_set(client, on_MQTT_LOCAL_publish);
+    mosquitto_log_callback_set(client, on_MQTT_LOCAL_log);
+    const char* lwt = "{\"connected\":false}";
+    int rc = mosquitto_reconnect_delay_set(client, 1, 10, true);
+    if (rc == MOSQ_ERR_SUCCESS) {
+        rc = mosquitto_will_set(client, MQTT_LOCAL_STATUS_TOPIC.c_str(), strlen(lwt), lwt, 0, true);
+    }
+    if (rc == MOSQ_ERR_SUCCESS && !MQTT_LOCAL_USER.empty() && !MQTT_LOCAL_PASSWORD.empty()) {
+        rc = mosquitto_username_pw_set(client, MQTT_LOCAL_USER.c_str(), MQTT_LOCAL_PASSWORD.c_str());
+    }
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << "[bridge] local client configuration failed: " << mosquitto_strerror(rc) << '\n';
+        mosquitto_destroy(client);
+        return nullptr;
+    }
+    if (!configure_MQTT_LOCAL_tls(client)) {
+        mosquitto_destroy(client);
+        return nullptr;
+    }
+    return client;
+}
+
+static void stop_MQTT_LOCAL_client(bool clean_disconnect) {
+    mosquitto* old_client;
+    {
+        std::lock_guard<std::mutex> lock(g_MQTT_LOCAL_mutex);
+        old_client = g_local;
+        g_local = nullptr;
+        g_MQTT_LOCAL_connected = false;
+    }
+    // Callbacks can finish and concurrent BMW messages see a null client safely.
+    if (old_client) {
+        if (clean_disconnect) mosquitto_disconnect(old_client);
+        mosquitto_loop_stop(old_client, true);
+        mosquitto_destroy(old_client);
+    }
+    g_MQTT_LOCAL_connected = false;
+}
+
+static bool restart_MQTT_LOCAL_client() {
+    stop_MQTT_LOCAL_client(false);
+    mosquitto* client = create_MQTT_LOCAL_client();
+    if (!client) {
+        std::cerr << "[bridge] local MQTT client rebuild failed\n";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_MQTT_LOCAL_mutex);
+        g_local = client;
+    }
+    int rc = mosquitto_connect_async(client, MQTT_LOCAL_HOST.c_str(), MQTT_LOCAL_PORT, 30);
+    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(client);
+    std::cerr << "[bridge] local MQTT rebuild+connect rc=" << rc
+              << " (" << mosquitto_strerror(rc) << ")\n";
+    if (rc != MOSQ_ERR_SUCCESS) {
+        stop_MQTT_LOCAL_client(false);
+        return false;
+    }
+    return true;
+}
+
+static void check_MQTT_LOCAL_connection(std::chrono::steady_clock::time_point now) {
+    static auto last_connected = now;
+    if (g_MQTT_LOCAL_connected.load()) {
+        last_connected = now;
+        return;
+    }
+    if (g_stop || now - last_connected < std::chrono::seconds(30)) return;
+    // Rate-limit failed rebuilds independently of BMW's token/connect backoff.
+    last_connected = now;
+    std::cerr << "[bridge] local MQTT disconnected for 30s; rebuilding client\n";
+    restart_MQTT_LOCAL_client();
+}
 
 // v5 connect callback (no property iteration, Debian header only forward-declares properties)
 static void on_bmw_connect_v5(struct mosquitto*, void*, int rc, int flags, const mosquitto_property* /*props*/){
@@ -346,7 +566,7 @@ static void on_bmw_connect_v5(struct mosquitto*, void*, int rc, int flags, const
 
     if(rc == 0){
         g_connected = true;
-        std::string sub = GCID + std::string("/+");
+        std::string sub = BMW_GCID + std::string("/+");
         int mid = 0;
         int s_rc = mosquitto_subscribe(g_bmw, &mid, sub.c_str(), 1);
         std::cerr << "[bridge] subscribe '" << sub << "' rc=" << s_rc << " mid=" << mid << "\n";
@@ -388,15 +608,15 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
 
     // Republishing: 1) RAW (neu)  2) Legacy (alt)
     auto pos = in_topic.find('/');
-    std::string raw_topic    = LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
-    std::string legacy_topic = LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
+    std::string raw_topic    = MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
+    std::string legacy_topic = MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
 
     bool retain_flag = (MQTT_RETAIN != 0);
-    int rc1 = mosquitto_publish(g_local, nullptr, raw_topic.c_str(),
-                                m->payloadlen, m->payload, 0, retain_flag);
-    int rc2 = mosquitto_publish(g_local, nullptr, legacy_topic.c_str(),
-                                m->payloadlen, m->payload, 0, retain_flag);
-       
+    const std::string raw_payload(m->payload ? static_cast<const char*>(m->payload) : "",
+                                  m->payload ? static_cast<size_t>(m->payloadlen) : 0);
+    int rc1 = publish_local(raw_topic, raw_payload, retain_flag);
+    int rc2 = publish_local(legacy_topic, raw_payload, retain_flag);
+
     std::cerr << "[bridge] fwd rc1=" << rc1
               << " rc2=" << rc2
               << " retain=" << (retain_flag ? 1 : 0)
@@ -406,7 +626,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
               << "' bytes="<< m->payloadlen << "\n";
 
     // Optional: Splitten aktiv?
-    if (!SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
+    if (!MQTT_SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
         return;
 
     try {
@@ -431,11 +651,9 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
         if (j.contains("data") && j["data"].is_object()) {
             for (auto& [propName, propObj] : j["data"].items()) {
                 if (propObj.contains("value")) {
-                    std::string topic = LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
+                    std::string topic = MQTT_LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
                     std::string val = propObj.dump();
-                    int rc = mosquitto_publish(g_local, nullptr, topic.c_str(),
-+                                               val.size(), val.data(),
-+                                               0, retain_flag);
+                    int rc = publish_local(topic, val, retain_flag);
                     std::cerr << "[bridge] split '" << topic << "' val=" << val << " rc=" << rc << "\n";
                 }
             }
@@ -491,7 +709,7 @@ static void on_bmw_suback(struct mosquitto* /*mosq*/, void* /*userdata*/,
 // ===================== BMW client factory =====================
 
 static mosquitto* create_bmw_client() {
-    mosquitto* m = mosquitto_new(CLIENT_ID.c_str(), true, nullptr);
+    mosquitto* m = mosquitto_new(BMW_CLIENT_ID.c_str(), true, nullptr);
     if(!m) return nullptr;
 
     // enable MQTT v5
@@ -514,7 +732,7 @@ static mosquitto* create_bmw_client() {
     );
 
     // auth
-    mosquitto_username_pw_set(m, GCID.c_str(), g_id_token.c_str());
+    mosquitto_username_pw_set(m, BMW_GCID.c_str(), g_id_token.c_str());
 
     return m;
 }
@@ -530,38 +748,42 @@ int main(){
     // load .env from fixed token directory (created by bmw_flow.sh)
     const std::string TDIR = token_dir();
     const std::string ENV_PATH = (std::filesystem::path(TDIR) / ".env").string();
-    load_env_file(ENV_PATH);
+    if (env_int("BMW_LOAD_ENV_FILE", 1) != 0) load_env_file(ENV_PATH);
+    const std::string heartbeat_path = env_str("BMW_HEARTBEAT_FILE", "");
+    // Do not reuse a heartbeat from a previous run of this container.
+    if (!heartbeat_path.empty()) std::remove(heartbeat_path.c_str());
 
     // initialize
-    CLIENT_ID        = env_str("CLIENT_ID",        "");
-    GCID             = env_str("GCID",             "");
+    BMW_CLIENT_ID        = env_str("BMW_CLIENT_ID",        "");
+    BMW_GCID             = env_str("BMW_GCID",             "");
     BMW_HOST         = env_str("BMW_HOST",         "customer.streaming-cardata.bmwgroup.com");
     BMW_PORT         = env_int("BMW_PORT",         9000);
-    LOCAL_HOST       = env_str("LOCAL_HOST",       "127.0.0.1");
-    LOCAL_PORT       = env_int("LOCAL_PORT",       1883);
-    LOCAL_PREFIX     = env_str("LOCAL_PREFIX",     "bmw/");
-    LOCAL_USER       = env_str("LOCAL_USER",       "");
-    LOCAL_PASSWORD   = env_str("LOCAL_PASSWORD",   "");
-    SPLIT_TOPICS     = env_int("SPLIT_TOPICS",     0);
+    MQTT_LOCAL_HOST       = env_str("MQTT_LOCAL_HOST",       "127.0.0.1");
+    MQTT_LOCAL_PORT       = env_int("MQTT_LOCAL_PORT",       1883);
+    MQTT_LOCAL_PREFIX     = env_str("MQTT_LOCAL_PREFIX",     "bmw/");
+    MQTT_LOCAL_BMW_CLIENT_ID  = env_str("MQTT_LOCAL_BMW_CLIENT_ID",  "");
+    MQTT_LOCAL_USER       = env_str("MQTT_LOCAL_USER",       "");
+    MQTT_LOCAL_PASSWORD   = env_str("MQTT_LOCAL_PASSWORD",   "");
+    MQTT_SPLIT_TOPICS     = env_int("MQTT_SPLIT_TOPICS",     0);
     MQTT_RETAIN      = env_int("MQTT_RETAIN",      0);
 
     // fixed token files (no env overrides)
-    ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token.txt").string();
-    REFRESH_TOKEN_FILE  = (std::filesystem::path(TDIR) / "refresh_token.txt").string();
+    ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token").string();
+    REFRESH_TOKEN_FILE  = (std::filesystem::path(TDIR) / "refresh_token").string();
     // Prefix-Fallback + normalization
-    if (LOCAL_PREFIX.empty()) {
-        LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
+    if (MQTT_LOCAL_PREFIX.empty()) {
+        MQTT_LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
     }
-    if (LOCAL_PREFIX.back() != '/') {
-        LOCAL_PREFIX.push_back('/');       // just for protection
+    if (MQTT_LOCAL_PREFIX.back() != '/') {
+        MQTT_LOCAL_PREFIX.push_back('/');       // just for protection
     }
-    LOCAL_STATUS_TOPIC = LOCAL_PREFIX + "status";
-    std::cerr << "[bridge] using status topic: " << LOCAL_STATUS_TOPIC << "\n"; 
+    MQTT_LOCAL_STATUS_TOPIC = MQTT_LOCAL_PREFIX + "status";
+    std::cerr << "[bridge] using status topic: " << MQTT_LOCAL_STATUS_TOPIC << "\n";
 
-    STATUS_STABLE_DELAY = env_int("STATUS_STABLE_DELAY", 5);
-    if (STATUS_STABLE_DELAY < 0) STATUS_STABLE_DELAY = 0;
-    if (STATUS_STABLE_DELAY > 3600) STATUS_STABLE_DELAY = 3600;
-    std::cerr << "[bridge] status delay: " << STATUS_STABLE_DELAY << "s\n";
+    BMW_STATUS_STABLE_DELAY = env_int("BMW_STATUS_STABLE_DELAY", 5);
+    if (BMW_STATUS_STABLE_DELAY < 0) BMW_STATUS_STABLE_DELAY = 0;
+    if (BMW_STATUS_STABLE_DELAY > 3600) BMW_STATUS_STABLE_DELAY = 3600;
+    std::cerr << "[bridge] status delay: " << BMW_STATUS_STABLE_DELAY << "s\n";
 
 
     // ensure token directory exists
@@ -572,12 +794,12 @@ int main(){
     }
 
     // validate required IDs (no defaults; reject placeholders)
-    if (is_placeholder_uuid(CLIENT_ID)) {
-        std::cerr << "✖ CLIENT_ID missing or placeholder in " << ENV_PATH << "\n";
+    if (is_placeholder_uuid(BMW_CLIENT_ID)) {
+        std::cerr << "✖ BMW_CLIENT_ID missing or placeholder in configuration (environment or " << ENV_PATH << ")\n";
         return 1;
     }
-    if (is_placeholder_uuid(GCID)) {
-        std::cerr << "✖ GCID missing or placeholder in " << ENV_PATH << "\n";
+    if (is_placeholder_uuid(BMW_GCID)) {
+        std::cerr << "✖ BMW_GCID missing or placeholder in configuration (environment or " << ENV_PATH << ")\n";
         return 1;
     }
 
@@ -591,7 +813,7 @@ int main(){
     g_id_token = trim(read_file(ID_TOKEN_FILE));
     g_refresh_token = trim(read_file(REFRESH_TOKEN_FILE));
     if(g_id_token.empty() || g_refresh_token.empty()){
-        std::cerr << "✖ id_token.txt or refresh_token.txt missing/empty in " << TDIR << "\n";
+        std::cerr << "✖ id_token or refresh_token missing/empty in " << TDIR << "\n";
         return 1;
     }
     g_id_token_exp = jwt_exp_unix(g_id_token);
@@ -607,23 +829,12 @@ int main(){
     curl_global_init(CURL_GLOBAL_DEFAULT);
     mosquitto_lib_init();
 
-    // local broker
-    g_local = mosquitto_new("bmw-local-forwarder", true, nullptr);
-    if(!g_local){ std::cerr << "mosquitto_new local failed\n"; return 2; }
-
-    mosquitto_reconnect_delay_set(g_local, 1, 10, true);
-    const char* lwt = "{\"connected\":false}";
-    mosquitto_will_set(g_local, LOCAL_STATUS_TOPIC.c_str(), strlen(lwt), lwt, 0, true);
-
-    // Set credentials if provided
-    if (!LOCAL_USER.empty() && !LOCAL_PASSWORD.empty()) {
-        mosquitto_username_pw_set(g_local, LOCAL_USER.c_str(), LOCAL_PASSWORD.c_str());
+    // Start the local MQTT client asynchronously so the watchdog can supervise reconnects.
+    if (!restart_MQTT_LOCAL_client()) {
+        mosquitto_lib_cleanup();
+        curl_global_cleanup();
+        return 3;
     }
-
-    if(mosquitto_connect(g_local, LOCAL_HOST.c_str(), LOCAL_PORT, 30) != MOSQ_ERR_SUCCESS){
-        std::cerr << "connect local failed\n"; return 3;
-    }
-    mosquitto_loop_start(g_local);
     publish_status(false);
 
     // BMW broker
@@ -659,9 +870,22 @@ int main(){
             return (now - last_successful_refresh) >= HARD_REFRESH_SECS;
     };
 
+    auto last_heartbeat = std::chrono::steady_clock::time_point{};
     while(!g_stop){
         std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (g_stop) break;
         long now = time(nullptr);
+
+        const auto heartbeat_now = std::chrono::steady_clock::now();
+        if (heartbeat_now - last_heartbeat >= std::chrono::seconds(10)) {
+            if (!write_heartbeat(heartbeat_path)) {
+                std::cerr << "[bridge] could not write liveness heartbeat\n";
+            }
+            last_heartbeat = heartbeat_now;
+        }
+
+        check_MQTT_LOCAL_connection(heartbeat_now);
+        publish_status(g_connected.load());
 
         // 0) Backoff window active? → do not trigger new actions
         if (now < g_next_connect_after.load()) continue;
@@ -680,7 +904,7 @@ int main(){
                 last_refresh_attempt    = now;
                 last_successful_refresh = now;
 
-                int upw_rc = mosquitto_username_pw_set(g_bmw, GCID.c_str(), g_id_token.c_str());
+                int upw_rc = mosquitto_username_pw_set(g_bmw, BMW_GCID.c_str(), g_id_token.c_str());
                 if (upw_rc != MOSQ_ERR_SUCCESS) {
                     std::cerr << "[bridge] username_pw_set rc=" << upw_rc << "\n";
                 }
@@ -735,20 +959,19 @@ int main(){
             }
         }
 
-        publish_status(g_connected.load());
     }
 
     // Cleanup
+    if (!heartbeat_path.empty()) std::remove(heartbeat_path.c_str());
     if (g_bmw) {
         mosquitto_loop_stop(g_bmw, true);
         mosquitto_disconnect(g_bmw);
         mosquitto_destroy(g_bmw);
     }
-    if (g_local) {
-        mosquitto_loop_stop(g_local, true);
-        mosquitto_disconnect(g_local);
-        mosquitto_destroy(g_local);
-    }
+    // A clean disconnect suppresses the Last Will; send offline explicitly first.
+    // If delivery fails, close without DISCONNECT so the broker can publish the Will.
+    const bool offline_acknowledged = publish_shutdown_status();
+    stop_MQTT_LOCAL_client(offline_acknowledged);
     mosquitto_lib_cleanup();
     curl_global_cleanup();
     std::cout << "[bridge] bye\n";
@@ -758,10 +981,11 @@ int main(){
 
 // ============= refresh tokens =============
 
-// small utility: safely writes a file (0644 default)
-static bool write_file_mode(const std::string& path, const std::string& data, mode_t mode=0644){
+// small utility: safely writes a file (0600 default)
+static bool write_file_mode(const std::string& path, const std::string& data, mode_t mode=0600){
     int fd = ::open(path.c_str(), O_CREAT|O_TRUNC|O_WRONLY, mode);
     if (fd < 0) return false;
+    if (::fchmod(fd, mode) != 0) { ::close(fd); return false; }
     ssize_t want = (ssize_t)data.size();
     const char* p = data.data();
     while (want > 0){
@@ -798,7 +1022,7 @@ static std::string build_form_body(const std::vector<std::pair<std::string,std::
 
 static bool write_file_atomic(const std::string& final_path,
                               const std::string& data,
-                              mode_t mode = 0644)
+                              mode_t mode = 0600)
 {
     namespace fs = std::filesystem;
 
@@ -875,7 +1099,7 @@ static bool refresh_tokens() {
     // load current refresh token (as in the script)
     std::string cur_refresh = trim(read_file(REFRESH_TOKEN_FILE));
     if (cur_refresh.empty()) {
-        std::cerr << "[bridge] refresh: refresh_token.txt missing/empty\n";
+        std::cerr << "[bridge] refresh: refresh_token missing/empty\n";
         return false;
     }
 
@@ -884,7 +1108,7 @@ static bool refresh_tokens() {
     const std::string body = build_form_body({
         {"grant_type",   "refresh_token"},
         {"refresh_token",cur_refresh},
-        {"client_id",    CLIENT_ID}
+        {"BMW_CLIENT_ID",    BMW_CLIENT_ID}
     });
 
     // HTTP Request via libcurl
@@ -937,10 +1161,10 @@ static bool refresh_tokens() {
     try {
         json dbg = json::parse(resp);
         write_file_mode((std::filesystem::path(dir) / "token_refresh_response.json").string(),
-                        dbg.dump(2) + "\n", 0644);
+                        dbg.dump(2) + "\n", 0600);
     } catch (...) {
         write_file_mode((std::filesystem::path(dir) / "token_refresh_response.json").string(),
-                        resp, 0644);
+                        resp, 0600);
     }
 
     if (http_code != 200) {
@@ -976,9 +1200,9 @@ static bool refresh_tokens() {
 
     // --- Atomar direkt ins Zielverzeichnis schreiben (kein /tmp mehr) ---
     bool ok = true;
-    ok &= write_file_atomic(id_path, new_id, 0644);
-    ok &= write_file_atomic(rt_path, new_rt, 0644);
-    ok &= write_file_atomic(at_path, new_acc, 0644);
+    ok &= write_file_atomic(id_path, new_id, 0600);
+    ok &= write_file_atomic(rt_path, new_rt, 0600);
+    ok &= write_file_atomic(at_path, new_acc, 0600);
 
     if (!ok) {
         std::cerr << "[bridge] writing tokens atomically failed\n";
@@ -991,10 +1215,9 @@ static bool refresh_tokens() {
     g_id_token_exp  = jwt_exp_unix(g_id_token);
 
     std::cout << "✔ New Tokens saved:\n"
-              << "   id_token.txt, refresh_token.txt, access_token.txt\n";
+              << "   id_token, refresh_token, access_token.txt\n";
     std::cout << "[bridge] token refreshed via HTTP, exp=" << g_id_token_exp
               << " (in " << (g_id_token_exp.load() - time(nullptr)) << "s)\n";
 
     return true;
 }
-

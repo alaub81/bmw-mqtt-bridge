@@ -1,0 +1,8 @@
+extends: default
+rules:
+  document-start: disable
+  line-length: disable
+  # GitHub Actions uses the key "on"; values must still be true/false.
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false

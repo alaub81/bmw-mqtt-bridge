@@ -1,11 +1,47 @@
 services:
-  bmw-bridge:
+  bmw-mqtt-bridge:
     build: .
     environment:
-      - XDG_STATE_HOME=/app/state          # Parent; Bridge nutzt /app/state/bmw-mqtt-bridge
-      - LOCAL_HOST=host.docker.internal    # MQTT läuft i.d.R. auf dem Host
-      - LOCAL_PORT=1883
-      - LOCAL_PREFIX=bmw/
+      BMW_LOAD_ENV_FILE: "0"
+      XDG_STATE_HOME: /app/conf
+      BMW_HEARTBEAT_FILE: /tmp/bmw-mqtt-bridge-heartbeat
+      BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
+      BMW_GCID: ${BMW_GCID:?Set BMW_GCID in .env}
+      MQTT_LOCAL_HOST: ${MQTT_LOCAL_HOST:-host.docker.internal}
+      MQTT_LOCAL_PORT: ${MQTT_LOCAL_PORT:-1883}
+      MQTT_LOCAL_PREFIX: ${MQTT_LOCAL_PREFIX:-bmw/}
+      MQTT_LOCAL_BMW_CLIENT_ID: ${MQTT_LOCAL_BMW_CLIENT_ID:-}
+      MQTT_LOCAL_USER: ${MQTT_LOCAL_USER:-}
+      MQTT_LOCAL_PASSWORD: ${MQTT_LOCAL_PASSWORD:-}
+      MQTT_LOCAL_TLS: "${MQTT_LOCAL_TLS:-false}"
+      MQTT_LOCAL_TLS_VERIFY: "${MQTT_LOCAL_TLS_VERIFY:-true}"
+      MQTT_LOCAL_TLS_CA_FILE: ${MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+      BMW_HOST: ${BMW_HOST:-customer.streaming-cardata.bmwgroup.com}
+      BMW_PORT: ${BMW_PORT:-9000}
+      MQTT_SPLIT_TOPICS: ${MQTT_SPLIT_TOPICS:-0}
+      MQTT_RETAIN: ${MQTT_RETAIN:-0}
+      BMW_STATUS_STABLE_DELAY: ${BMW_STATUS_STABLE_DELAY:-5}
     volumes:
-      - ${HOME}/.local/state:/app/state    # Host-State ↔ Container-State (bind mount)
+      - data-token:/app/conf
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # Check the main process and a heartbeat no more than 90 seconds old.
+      test:
+        - CMD-SHELL
+        - >-
+          test /proc/1/exe -ef /app/bmw_mqtt_bridge &&
+          read -r heartbeat_time heartbeat_pid < "$$BMW_HEARTBEAT_FILE" &&
+          test "$$heartbeat_pid" = 1 &&
+          now=$$(date +%s) &&
+          age=$$((now - heartbeat_time)) &&
+          test "$$age" -ge 0 && test "$$age" -le 90
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
+
+volumes:
+  data-token:
+    name: data-token

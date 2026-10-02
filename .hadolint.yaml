@@ -1,0 +1,4 @@
+failure-threshold: warning
+ignored:
+  # Debian security updates intentionally follow the selected distribution.
+  - DL3008
