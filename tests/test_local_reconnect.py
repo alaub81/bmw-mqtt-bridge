@@ -28,9 +28,9 @@ class LocalReconnectTests(unittest.TestCase):
 #include <thread>
 struct mosquitto { bool stopped = false; };
 static mosquitto* g_local = nullptr;
-static std::mutex g_MQTT_LOCAL_mutex;
-static std::atomic<bool> g_MQTT_LOCAL_connected{false}, g_stop{false};
-static std::string MQTT_LOCAL_BMW_CLIENT_ID = "bmw5-bridge", MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
+static std::mutex g_local_mutex;
+static std::atomic<bool> g_local_connected{false}, g_stop{false};
+static std::string MQTT_LOCAL_CLIENT_ID = "bmw5-bridge", MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
 static std::string MQTT_LOCAL_USER = "user", MQTT_LOCAL_PASSWORD = "password", MQTT_LOCAL_HOST = "mqtt.test";
 static int MQTT_LOCAL_PORT = 8883;
 constexpr int MOSQ_ERR_SUCCESS = 0, MOSQ_ERR_NO_CONN = 4;
@@ -38,28 +38,28 @@ static int created = 0, destroyed = 0, connect_calls = 0, tls_calls = 0, publish
 static int connect_result = 0, loop_result = 0;
 static bool allocation_failure = false, tls_failure = false, probe_stop = false;
 static int publish_local(const std::string&, const std::string&, bool);
-static void on_MQTT_LOCAL_connect(mosquitto*, void*, int) {}
-static void on_MQTT_LOCAL_disconnect(mosquitto*, void*, int) {}
-static void on_MQTT_LOCAL_publish(mosquitto*, void*, int) {}
-static void on_MQTT_LOCAL_log(mosquitto*, void*, int, const char*) {}
+static void on_local_connect(mosquitto*, void*, int) {}
+static void on_local_disconnect(mosquitto*, void*, int) {}
+static void on_local_publish(mosquitto*, void*, int) {}
+static void on_local_log(mosquitto*, void*, int, const char*) {}
 const char* mosquitto_strerror(int) { return "test result"; }
 mosquitto* mosquitto_new(const char* id, bool clean, void*) {
     ++created;
     assert(clean);
-    assert(MQTT_LOCAL_BMW_CLIENT_ID.empty() ? id == nullptr : std::string(id) == MQTT_LOCAL_BMW_CLIENT_ID);
+    assert(MQTT_LOCAL_CLIENT_ID.empty() ? id == nullptr : std::string(id) == MQTT_LOCAL_CLIENT_ID);
     return allocation_failure ? nullptr : new mosquitto;
 }
 void mosquitto_connect_callback_set(mosquitto*, void (*callback)(mosquitto*, void*, int)) {
-    assert(callback == on_MQTT_LOCAL_connect);
+    assert(callback == on_local_connect);
 }
 void mosquitto_disconnect_callback_set(mosquitto*, void (*callback)(mosquitto*, void*, int)) {
-    assert(callback == on_MQTT_LOCAL_disconnect);
+    assert(callback == on_local_disconnect);
 }
 void mosquitto_publish_callback_set(mosquitto*, void (*callback)(mosquitto*, void*, int)) {
-    assert(callback == on_MQTT_LOCAL_publish);
+    assert(callback == on_local_publish);
 }
 void mosquitto_log_callback_set(mosquitto*, void (*callback)(mosquitto*, void*, int, const char*)) {
-    assert(callback == on_MQTT_LOCAL_log);
+    assert(callback == on_local_log);
 }
 int mosquitto_reconnect_delay_set(mosquitto*, int minimum, int maximum, bool backoff) {
     assert(minimum == 1 && maximum == 10 && backoff);
@@ -75,7 +75,7 @@ int mosquitto_username_pw_set(mosquitto*, const char* user, const char* password
     assert(std::string(user) == MQTT_LOCAL_USER && std::string(password) == MQTT_LOCAL_PASSWORD);
     return 0;
 }
-bool configure_MQTT_LOCAL_tls(mosquitto*) { ++tls_calls; return !tls_failure; }
+bool configure_local_tls(mosquitto*) { ++tls_calls; return !tls_failure; }
 int mosquitto_connect_async(mosquitto* client, const char* host, int port, int keepalive) {
     assert(g_local == client);
     assert(std::string(host) == MQTT_LOCAL_HOST && port == MQTT_LOCAL_PORT && keepalive == 30);
@@ -114,67 +114,67 @@ int main(int argc, char** argv) {
     const std::string scenario = argv[1];
     const auto start = std::chrono::steady_clock::time_point{};
     if (scenario == "stalled-loop") {
-        assert(restart_MQTT_LOCAL_client());
-        check_MQTT_LOCAL_connection(start);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(29));
+        assert(restart_local_client());
+        check_local_connection(start);
+        check_local_connection(start + std::chrono::seconds(29));
         assert(created == 1);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(30));
+        check_local_connection(start + std::chrono::seconds(30));
         assert(created == 2 && destroyed == 1 && connect_calls == 2 && tls_calls == 2);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(59));
+        check_local_connection(start + std::chrono::seconds(59));
         assert(created == 2);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(60));
+        check_local_connection(start + std::chrono::seconds(60));
         assert(created == 3 && destroyed == 2);
     } else if (scenario == "automatic-reconnect") {
-        assert(restart_MQTT_LOCAL_client());
-        check_MQTT_LOCAL_connection(start);
-        g_MQTT_LOCAL_connected = true;
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(20));
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(100));
+        assert(restart_local_client());
+        check_local_connection(start);
+        g_local_connected = true;
+        check_local_connection(start + std::chrono::seconds(20));
+        check_local_connection(start + std::chrono::seconds(100));
         assert(created == 1);
-        g_MQTT_LOCAL_connected = false;
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(129));
+        g_local_connected = false;
+        check_local_connection(start + std::chrono::seconds(129));
         assert(created == 1);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(130));
+        check_local_connection(start + std::chrono::seconds(130));
         assert(created == 2);
     } else if (scenario == "allocation-failure") {
-        check_MQTT_LOCAL_connection(start);
+        check_local_connection(start);
         allocation_failure = true;
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(30));
+        check_local_connection(start + std::chrono::seconds(30));
         assert(created == 1 && !g_local);
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(59));
+        check_local_connection(start + std::chrono::seconds(59));
         assert(created == 1);
         allocation_failure = false;
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(60));
+        check_local_connection(start + std::chrono::seconds(60));
         assert(created == 2 && g_local);
     } else if (scenario == "connect-failure" || scenario == "loop-failure" || scenario == "tls-failure") {
         if (scenario == "connect-failure") connect_result = 4;
         if (scenario == "loop-failure") loop_result = 7;
         if (scenario == "tls-failure") tls_failure = true;
-        assert(!restart_MQTT_LOCAL_client());
-        assert(!g_local && !g_MQTT_LOCAL_connected && destroyed == 1);
+        assert(!restart_local_client());
+        assert(!g_local && !g_local_connected && destroyed == 1);
         connect_result = loop_result = 0;
         tls_failure = false;
-        assert(restart_MQTT_LOCAL_client());
-        assert(g_local && !g_MQTT_LOCAL_connected);
+        assert(restart_local_client());
+        assert(g_local && !g_local_connected);
     } else if (scenario == "concurrent-publishing") {
-        assert(restart_MQTT_LOCAL_client());
+        assert(restart_local_client());
         assert(publish_local("bmw5/test", "payload", true) == MOSQ_ERR_NO_CONN);
-        g_MQTT_LOCAL_connected = true;
+        g_local_connected = true;
         assert(publish_local("bmw5/test", "payload", true) == 0);
         probe_stop = true;
-        assert(restart_MQTT_LOCAL_client());
+        assert(restart_local_client());
         assert(publish_calls == 1 && destroyed == 1);
     } else if (scenario == "shutdown") {
-        check_MQTT_LOCAL_connection(start);
+        check_local_connection(start);
         g_stop = true;
-        check_MQTT_LOCAL_connection(start + std::chrono::seconds(60));
+        check_local_connection(start + std::chrono::seconds(60));
         assert(created == 0);
     } else if (scenario == "generated-id") {
-        MQTT_LOCAL_BMW_CLIENT_ID.clear();
-        assert(restart_MQTT_LOCAL_client());
+        MQTT_LOCAL_CLIENT_ID.clear();
+        assert(restart_local_client());
     } else { return 1; }
-    stop_MQTT_LOCAL_client(false);
-    assert(!g_local && !g_MQTT_LOCAL_connected);
+    stop_local_client(false);
+    assert(!g_local && !g_local_connected);
 }
 ''')
         cls.binary = Path(cls.temp.name) / 'reconnect-test'

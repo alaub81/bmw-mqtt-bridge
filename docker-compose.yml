@@ -3,39 +3,44 @@ services:
     build: .
     environment:
       BMW_LOAD_ENV_FILE: "0"
-      XDG_STATE_HOME: /app/conf
+      BMW_TOKEN_DIR: /app/token
       BMW_HEARTBEAT_FILE: /tmp/bmw-mqtt-bridge-heartbeat
+      HEALTH_MQTT_DISCONNECT_TIMEOUT: ${HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
       BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
       BMW_GCID: ${BMW_GCID:?Set BMW_GCID in .env}
+      BMW_HOST: ${BMW_HOST:-customer.streaming-cardata.bmwgroup.com}
+      BMW_PORT: ${BMW_PORT:-9000}
+      BMW_STATUS_STABLE_DELAY: ${BMW_STATUS_STABLE_DELAY:-5}
       MQTT_LOCAL_HOST: ${MQTT_LOCAL_HOST:-host.docker.internal}
       MQTT_LOCAL_PORT: ${MQTT_LOCAL_PORT:-1883}
       MQTT_LOCAL_PREFIX: ${MQTT_LOCAL_PREFIX:-bmw/}
-      MQTT_LOCAL_BMW_CLIENT_ID: ${MQTT_LOCAL_BMW_CLIENT_ID:-}
+      MQTT_LOCAL_CLIENT_ID: ${MQTT_LOCAL_CLIENT_ID:-}
       MQTT_LOCAL_USER: ${MQTT_LOCAL_USER:-}
       MQTT_LOCAL_PASSWORD: ${MQTT_LOCAL_PASSWORD:-}
       MQTT_LOCAL_TLS: "${MQTT_LOCAL_TLS:-false}"
       MQTT_LOCAL_TLS_VERIFY: "${MQTT_LOCAL_TLS_VERIFY:-true}"
       MQTT_LOCAL_TLS_CA_FILE: ${MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
-      BMW_HOST: ${BMW_HOST:-customer.streaming-cardata.bmwgroup.com}
-      BMW_PORT: ${BMW_PORT:-9000}
       MQTT_SPLIT_TOPICS: ${MQTT_SPLIT_TOPICS:-0}
       MQTT_RETAIN: ${MQTT_RETAIN:-0}
-      BMW_STATUS_STABLE_DELAY: ${BMW_STATUS_STABLE_DELAY:-5}
     volumes:
-      - data-token:/app/conf
+      - data-token:${BMW_TOKEN_DIR:-/app/token}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      # Check the main process and a heartbeat no more than 90 seconds old.
+      # Check process liveness and prolonged outages of either MQTT connection.
       test:
         - CMD-SHELL
         - >-
           test /proc/1/exe -ef /app/bmw_mqtt_bridge &&
-          read -r heartbeat_time heartbeat_pid < "$$BMW_HEARTBEAT_FILE" &&
+          read -r heartbeat_time heartbeat_pid local_offline bmw_offline < "$$BMW_HEARTBEAT_FILE" &&
           test "$$heartbeat_pid" = 1 &&
           now=$$(date +%s) &&
           age=$$((now - heartbeat_time)) &&
-          test "$$age" -ge 0 && test "$$age" -le 90
+          test "$$age" -ge 0 && test "$$age" -le 90 &&
+          test "$$HEALTH_MQTT_DISCONNECT_TIMEOUT" -gt 0 &&
+          test "$$local_offline" -ge 0 && test "$$bmw_offline" -ge 0 &&
+          test "$$local_offline" -lt "$$HEALTH_MQTT_DISCONNECT_TIMEOUT" &&
+          test "$$bmw_offline" -lt "$$HEALTH_MQTT_DISCONNECT_TIMEOUT"
       interval: 30s
       timeout: 5s
       start_period: 30s
@@ -44,4 +49,3 @@ services:
 
 volumes:
   data-token:
-    name: data-token

@@ -109,7 +109,7 @@ users with Docker access; passing values this way does not make them secrets.
 
 ### Persistent tokens: Docker volume
 
-Compose mounts the named Docker volume `data-token` at `/app/conf`. The explicit
+Compose mounts the named Docker volume `data-token` at `/app/token`. The explicit
 `name: data-token` keeps its actual Docker name exactly `data-token`, without a
 Compose project prefix. Configuration is still supplied from the host `.env`
 through environment variables. No token secrets or host bind mount are required.
@@ -117,16 +117,16 @@ through environment variables. No token secrets or host bind mount are required.
 The tokens live at these paths inside the container:
 
 ```text
-/app/conf/id_token
-/app/conf/refresh_token
+/app/token/id_token
+/app/token/refresh_token
 ```
 
 The bridge renews tokens automatically and saves them with permissions `0600`.
-All state files live directly in `/app/conf`, without an additional subdirectory.
+All state files live directly in `/app/token`, without an additional subdirectory.
 On the first bridge start after an update, the entrypoint moves a complete token
-pair from the old `/app/conf/bmw-mqtt-bridge` directory into `/app/conf`. It also
+pair from the old `/app/token/bmw-mqtt-bridge` directory into `/app/token`. It also
 moves accompanying state files when their destination does not exist. Existing
-tokens in `/app/conf` are never overwritten; incomplete pairs require
+tokens in `/app/token` are never overwritten; incomplete pairs require
 reauthentication. An empty legacy directory is removed after migration.
 The volume survives container replacement and `docker compose down`.
 `docker compose down -v` deletes it and requires authentication again.
@@ -191,7 +191,7 @@ or its issuing CA by mounting a PEM certificate file read-only:
 services:
   bmw-mqtt-bridge:
     volumes:
-      - data-token:/app/conf
+      - data-token:/app/token
       - ./certs/mqtt-ca.crt:/app/certs/mqtt-ca.crt:ro
 ```
 
@@ -208,7 +208,7 @@ docker compose up -d --build --force-recreate
 
 ### Local MQTT client ID
 
-Set `MQTT_LOCAL_BMW_CLIENT_ID=bmw5-bridge` in the host `.env` to use a fixed client ID for
+Set `MQTT_LOCAL_CLIENT_ID=bmw5-bridge` in the host `.env` to use a fixed client ID for
 your MQTT broker. Leave it empty to let Mosquitto generate a random ID. Use a
 different value for each concurrent instance connected to the same broker.
 This setting is independent of the BMW OAuth `BMW_CLIENT_ID` and `MQTT_LOCAL_PREFIX`.
@@ -219,12 +219,22 @@ The healthcheck is defined only in `docker-compose.yml`. Every 30 seconds it che
 that PID 1 is executing `/app/bmw_mqtt_bridge` and that the heartbeat in
 `/tmp/bmw-mqtt-bridge-heartbeat` belongs to PID 1 and is no more than 90 seconds
 old. Startup grace is 30 seconds, timeout is 5 seconds, and 3 failed checks mark
-the container unhealthy.
+the container unhealthy. It also fails when either the local or BMW MQTT
+connection has been continuously unavailable for at least
+`HEALTH_MQTT_DISCONNECT_TIMEOUT` seconds (default: 120). Set this positive value
+in the host `.env` to change the grace period for both connections. With the
+30-second interval and 3 retries, an outage normally marks the container unhealthy
+roughly 3 minutes after it starts; the 120-second threshold begins failed checks,
+rather than immediately changing Docker's health status.
 
-The bridge writes the timestamp and process ID atomically every 10 seconds from
+The bridge writes the timestamp, process ID and separate downtime counters atomically every 10 seconds from
 its main loop, including during MQTT reconnect backoff. A stalled main loop stops
-updating the heartbeat. MQTT broker outages and missing vehicle messages do not
-affect this liveness check. The heartbeat is removed on startup and clean shutdown.
+updating the heartbeat. Connection changes trigger an additional heartbeat update.
+The downtime counters use a monotonic clock, continue across watchdog rebuilds,
+and reset when the main loop observes a successful reconnect. The next successful
+Docker healthcheck restores `healthy`; both connections must be within their
+allowed downtime. No vehicle messages are required, so a parked car does not
+cause a failed check. The heartbeat is removed on startup and clean shutdown.
 `BMW_HEARTBEAT_FILE` is supplied by Compose; without it, heartbeat writing is disabled.
 The file lives in `/tmp`, outside the persistent token volume.
 
@@ -265,8 +275,8 @@ Start the compiled bridge with:
 ./resources/src/bmw_mqtt_bridge
 ```
 
-If `XDG_STATE_HOME` is set, authentication and the bridge both use
-`XDG_STATE_HOME` directly instead of the default state directory. No application
+If `BMW_TOKEN_DIR` is set, authentication and the bridge both use
+`BMW_TOKEN_DIR` directly instead of the default state directory. No application
 subdirectory is added to an explicitly configured path.
 
 ## Environment variables
@@ -290,8 +300,8 @@ When file loading is enabled, the program loads `.env` from the **token director
 
 - Default:
   `$HOME/.local/state/bmw-mqtt-bridge/.env`
-- If `$XDG_STATE_HOME` is set:
-  `${XDG_STATE_HOME}/.env`
+- If `$BMW_TOKEN_DIR` is set:
+  `${BMW_TOKEN_DIR}/.env`
 
 ---
 
@@ -316,7 +326,7 @@ Validation on startup:
 |------------------|------|-------------|----------|-------------|
 | `MQTT_LOCAL_HOST`     | str  | `127.0.0.1` | No       | Host/IP of your local MQTT broker. |
 | `MQTT_LOCAL_PORT`     | int  | `1883`      | No       | Port of your local MQTT broker. |
-| `MQTT_LOCAL_BMW_CLIENT_ID` | str | *(empty)* | No | Client ID for your MQTT broker. Empty generates a random ID; configured IDs must be unique per running instance. |
+| `MQTT_LOCAL_CLIENT_ID` | str | *(empty)* | No | Client ID for your MQTT broker. Empty generates a random ID; configured IDs must be unique per running instance. |
 | `MQTT_LOCAL_USER`     | str  | *(empty)*   | No       | Username for local broker authentication (optional). |
 | `MQTT_LOCAL_PASSWORD` | str  | *(empty)*   | No       | Password for local broker authentication (optional). |
 | `MQTT_LOCAL_TLS` | bool | `false` | No | Enable TLS for the local broker. Accepts `true/false` (case insensitive). |
@@ -347,8 +357,9 @@ Validation on startup:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `BMW_LOAD_ENV_FILE` | `1` natively; `0` in Docker | `0` disables the state-directory `.env` loader. The bridge otherwise uses the file as fallback; existing process environment values take precedence. The authentication helper sources this file when loading is enabled. |
-| `XDG_STATE_HOME` | Unset natively; `/app/conf` in Docker | Exact directory for state and token files; no subdirectory is appended. When unset, native operation uses `$HOME/.local/state/bmw-mqtt-bridge`. Use the same value for authentication and bridge operation. |
+| `BMW_TOKEN_DIR` | Unset natively; `/app/token` in Docker | Exact directory for state and token files; no subdirectory is appended. When unset, native operation uses `$HOME/.local/state/bmw-mqtt-bridge`. Use the same value for authentication and bridge operation. |
 | `BMW_HEARTBEAT_FILE` | Empty natively; `/tmp/bmw-mqtt-bridge-heartbeat` in Compose | Enables the main-loop heartbeat used by the Compose healthcheck. An empty value disables heartbeat writing. |
+| `HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
 
 The supplied `.env.example` enables `MQTT_SPLIT_TOPICS=1`; the executable and Compose
 fallback default to `0` when it is not configured. Compose's default `MQTT_LOCAL_HOST`
@@ -373,8 +384,8 @@ as `local MQTT disconnected for 30s; rebuilding client`.
 
 The watchdog runs in the main loop, so blocking token refresh or other main-loop
 work can delay a check. Vehicle messages received while the local connection is
-unavailable are not buffered or replayed. The Docker healthcheck continues to
-measure process liveness rather than broker connectivity.
+unavailable are not buffered or replayed. The Docker healthcheck measures both
+process liveness and prolonged outages of either MQTT connection.
 
 ### Status Topic Prefix
 
@@ -402,6 +413,14 @@ and all other MQTT messages (e.g. `raw`, `vehicles`, etc.) under the same prefix
 **status:**
 
 Reports the connection state to the BMW MQTT broker (true = connected, false = disconnected).
+
+A successful local MQTT reconnect does not imply that BMW is connected. After
+local CONNACK, the bridge immediately attempts to publish the current BMW state;
+the normal disconnect debounce still applies. Status messages use retained QoS 1
+and are refreshed every 30 seconds while the connection state is stable. This
+also corrects a retained status overwritten later by a delayed Last Will. The
+state is read inside the publisher instead of accepting a caller's earlier
+snapshot. Callbacks from retired local clients are ignored.
 
 true is published immediately when the connection is established.
 
@@ -509,7 +528,7 @@ WantedBy=multi-user.target
 
 Replace the username and paths with your installation. Run authentication first
 as that user so the state-directory `.env` and tokens belong to the service
-account. If you use a custom state directory, add `Environment=XDG_STATE_HOME=...`
+account. If you use a custom state directory, add `Environment=BMW_TOKEN_DIR=...`
 to the service and use the same value when authenticating.
 
 ```bash

@@ -43,7 +43,7 @@ COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
 
 # Default environment
-ENV XDG_STATE_HOME=/app/conf \
+ENV BMW_TOKEN_DIR=/app/token \
     BMW_LOAD_ENV_FILE=0 \
     BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMW_PORT=9000 \
@@ -52,7 +52,7 @@ ENV XDG_STATE_HOME=/app/conf \
     MQTT_LOCAL_PREFIX=bmw/
 
 # Persist token/config directory
-VOLUME ["/app/conf"]
+VOLUME ["/app/token"]
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/bmw_mqtt_bridge"]

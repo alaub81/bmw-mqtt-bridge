@@ -16,7 +16,7 @@ class DockerConfigurationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.state = self.base / 'state'
-        self.env = dict(os.environ, XDG_STATE_HOME=str(self.state),
+        self.env = dict(os.environ, BMW_TOKEN_DIR=str(self.state),
                         BMW_LOAD_ENV_FILE='0')
         # Replace only the final binary execution with a harmless sentinel.
         # All bootstrap and validation logic is the production entrypoint.
@@ -140,15 +140,15 @@ class DockerConfigurationTests(unittest.TestCase):
         helpers = source.split('// ---------------------- tiny helpers for env config ----------------------')[1]
         helpers = helpers.split('// ===================== Configuration =====================')[0]
         directory_helper = source[source.index('static std::string token_dir() {'):]
-        directory_helper = directory_helper.split('// Local liveness heartbeat;')[0]
+        directory_helper = directory_helper.split('// Health telemetry:')[0]
         test_source = self.base / 'env_test.cpp'
         test_source.write_text('#include <string>\n#include <fstream>\n'
                                '#include <cstdlib>\n#include <cassert>\n#include <algorithm>\n'
                                '#include <cctype>\n#include <stdexcept>\n' + helpers + directory_helper + r'''
 int main(int argc, char** argv) {
-    setenv("XDG_STATE_HOME", "/app/conf", 1);
-    assert(token_dir() == "/app/conf");
-    unsetenv("XDG_STATE_HOME");
+    setenv("BMW_TOKEN_DIR", "/app/token", 1);
+    assert(token_dir() == "/app/token");
+    unsetenv("BMW_TOKEN_DIR");
     setenv("HOME", "/home/bmw-test", 1);
     assert(token_dir() == "/home/bmw-test/.local/state/bmw-mqtt-bridge");
     unsetenv("HOME");

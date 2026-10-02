@@ -44,7 +44,7 @@
 #       ~/.local/state/bmw-mqtt-bridge
 #   - If no .env file exists, it will be created automatically with placeholders
 #     and opened in your text editor (nano by default).
-#   - Enter your real BMW_CLIENT_ID and BMW_GCID, save, exit the editor,
+#   - Enter your real CLIENT_ID and GCID, save, exit the editor,
 #     and then rerun the script.
 #
 # Outputs (stored in ~/.local/state/bmw-mqtt-bridge, permissions 644):
@@ -65,74 +65,70 @@
 
 
 set -euo pipefail
-umask 077
 
-# Use the explicit state directory directly; preserve the native default.
-OUT_DIR="${BMW_TOKEN_DIR:-$HOME/.local/state/bmw-mqtt-bridge}"
+# ---------- Fixed locations (no path overrides) ----------
+STATE_BASE="${XDG_STATE_HOME:-$HOME/.local/state}"
+OUT_DIR="$STATE_BASE/bmw-mqtt-bridge"
 ENV_FILE="$OUT_DIR/.env"
 
 # Ensure token dir exists
 mkdir -p "$OUT_DIR"
 
-# Docker supplies configuration through the process environment.
-if [[ "${BMW_LOAD_ENV_FILE:-1}" != "0" ]]; then
-  # ---------- Bootstrap .env if missing ----------
-  if [[ ! -f "$ENV_FILE" ]]; then
-    cat >"$ENV_FILE" <<'EOF'
+# ---------- Bootstrap .env if missing ----------
+if [[ ! -f "$ENV_FILE" ]]; then
+  cat >"$ENV_FILE" <<'EOF'
 # BMW CarData Credentials
-BMW_CLIENT_ID=11111111-1111-1111-1111-111111111111
-BMW_GCID=11111111-1111-1111-1111-111111111111
+CLIENT_ID=11111111-1111-1111-1111-111111111111
+GCID=11111111-1111-1111-1111-111111111111
 
 # Optional MQTT Configuration
-#MQTT_LOCAL_HOST=mosquitto
-#MQTT_LOCAL_PORT=1883
-#MQTT_LOCAL_PREFIX=bmw/
-#MQTT_LOCAL_USER=username
-#MQTT_LOCAL_PASSWORD=password
+#LOCAL_HOST=mosquitto
+#LOCAL_PORT=1883
+#LOCAL_PREFIX=bmw/
+#LOCAL_USER=username
+#LOCAL_PASSWORD=password
 EOF
-    if ! [ -t 0 ]; then
-      echo "BMW_CLIENT_ID and BMW_GCID must be configured before authentication."
-      echo "Run with an interactive TTY:"
-      echo "  docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh"
-      exit 1
-    fi
-    echo "Created $ENV_FILE"
-    echo "Please enter your real BMW_CLIENT_ID and BMW_GCID into $ENV_FILE."
-    "${EDITOR:-nano}" "$ENV_FILE" || true
-    echo "Re-run this script after updating $ENV_FILE."
-    exit 1
-  fi
-
-  # ---------- Load .env from fixed location ----------
-  set -a
-  # shellcheck disable=SC1090
-  . "$ENV_FILE"
-  set +a
-
-fi
-
-# ---------- Validate BMW_CLIENT_ID / BMW_GCID ----------
-if [[ -z "${BMW_CLIENT_ID:-}" || "$BMW_CLIENT_ID" == "11111111-1111-1111-1111-111111111111" ]]; then
-  if [[ "${BMW_LOAD_ENV_FILE:-1}" == "0" ]] || ! [ -t 0 ]; then
-    echo "BMW_CLIENT_ID and BMW_GCID must be configured before authentication."
+  if ! [ -t 0 ]; then
+    echo "Non-interactive mode detected."
     echo "Run with an interactive TTY:"
-    echo "  docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh"
+    echo "  docker compose run --rm -it bmw-bridge ./bmw_flow.sh"
     exit 1
   fi
-  echo "✖ BMW_CLIENT_ID is missing or still the placeholder in configuration." >&2
+  echo "Created $ENV_FILE"
+  echo "Please enter your real CLIENT_ID and GCID into $ENV_FILE."
   "${EDITOR:-nano}" "$ENV_FILE" || true
   echo "Re-run this script after updating $ENV_FILE."
   exit 1
 fi
 
-if [[ -z "${BMW_GCID:-}" || "$BMW_GCID" == "11111111-1111-1111-1111-111111111111" ]]; then
-  if [[ "${BMW_LOAD_ENV_FILE:-1}" == "0" ]] || ! [ -t 0 ]; then
-    echo "BMW_CLIENT_ID and BMW_GCID must be configured before authentication."
+# ---------- Load .env from fixed location ----------
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+set +a
+
+# ---------- Validate CLIENT_ID / GCID ----------
+if [[ -z "${CLIENT_ID:-}" || "$CLIENT_ID" == "11111111-1111-1111-1111-111111111111" ]]; then
+  if ! [ -t 0 ]; then
+    echo "Non-interactive mode detected."
     echo "Run with an interactive TTY:"
-    echo "  docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh"
+    echo "  docker compose run --rm -it bmw-bridge ./bmw_flow.sh"
     exit 1
   fi
-  echo "✖ BMW_GCID is missing or still the placeholder in configuration." >&2
+  echo "✖ CLIENT_ID is missing or still the placeholder in $ENV_FILE." >&2
+  "${EDITOR:-nano}" "$ENV_FILE" || true
+  echo "Re-run this script after updating $ENV_FILE."
+  exit 1
+fi
+
+if [[ -z "${GCID:-}" || "$GCID" == "11111111-1111-1111-1111-111111111111" ]]; then
+  if ! [ -t 0 ]; then
+    echo "Non-interactive mode detected."
+    echo "Run with an interactive TTY:"
+    echo "  docker compose run --rm -it bmw-bridge ./bmw_flow.sh"
+    exit 1
+  fi
+  echo "✖ GCID is missing or still the placeholder in $ENV_FILE." >&2
   "${EDITOR:-nano}" "$ENV_FILE" || true
   echo "Re-run this script after updating $ENV_FILE."
   exit 1
@@ -164,7 +160,7 @@ echo "1) Requesting device code…"
 RESP="$(curl -sS \
   -H "Accept: application/json" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode client_id="$BMW_CLIENT_ID" \
+  --data-urlencode client_id="$CLIENT_ID" \
   --data-urlencode scope="$SCOPES" \
   --data-urlencode code_challenge="$CODE_CHALLENGE" \
   --data-urlencode code_challenge_method="S256" \
@@ -201,7 +197,7 @@ while (( LEFT > 0 )); do
     -H "Content-Type: application/x-www-form-urlencoded" \
     --data-urlencode grant_type="urn:ietf:params:oauth:grant-type:device_code" \
     --data-urlencode device_code="$DEVICE_CODE" \
-    --data-urlencode client_id="$BMW_CLIENT_ID" \
+    --data-urlencode client_id="$CLIENT_ID" \
     --data-urlencode code_verifier="$CODE_VERIFIER" \
     "$TOKEN_ENDPOINT")"
 

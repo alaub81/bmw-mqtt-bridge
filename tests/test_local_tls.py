@@ -51,41 +51,41 @@ int main(int argc, char** argv) {
     unsetenv("MQTT_LOCAL_TLS_VERIFY");
     unsetenv("MQTT_LOCAL_TLS_CA_FILE");
     if (scenario == "default") {
-        assert(configure_MQTT_LOCAL_tls(&client));
+        assert(configure_local_tls(&client));
         assert(calls == 0);
     } else if (scenario == "secure") {
         setenv("MQTT_LOCAL_TLS", "true", 1);
-        assert(configure_MQTT_LOCAL_tls(&client));
+        assert(configure_local_tls(&client));
         assert(calls == 3 && verification == 1 && !insecure);
         assert(ca == "/etc/ssl/certs/ca-certificates.crt");
     } else if (scenario == "self-signed") {
         setenv("MQTT_LOCAL_TLS", "true", 1);
         setenv("MQTT_LOCAL_TLS_VERIFY", "FaLsE", 1);
-        assert(configure_MQTT_LOCAL_tls(&client));
+        assert(configure_local_tls(&client));
         assert(calls == 3 && verification == 0 && insecure);
     } else if (scenario == "custom-ca") {
         setenv("MQTT_LOCAL_TLS", "true", 1);
         setenv("MQTT_LOCAL_TLS_VERIFY", "true", 1);
         setenv("MQTT_LOCAL_TLS_CA_FILE", "/mounted/ca.crt", 1);
-        assert(configure_MQTT_LOCAL_tls(&client));
+        assert(configure_local_tls(&client));
         assert(ca == "/mounted/ca.crt" && verification == 1 && !insecure);
     } else if (scenario == "invalid-switch") {
         setenv("MQTT_LOCAL_TLS", "true", 1);
         setenv("MQTT_LOCAL_TLS_VERIFY", "invalid", 1);
-        assert(!configure_MQTT_LOCAL_tls(&client));
+        assert(!configure_local_tls(&client));
         assert(calls == 0);
         setenv("MQTT_LOCAL_TLS", "invalid", 1);
-        assert(!configure_MQTT_LOCAL_tls(&client));
+        assert(!configure_local_tls(&client));
     } else if (scenario == "tls-failure") {
         setenv("MQTT_LOCAL_TLS", "true", 1);
         for (int i = 1; i <= 3; ++i) {
             calls = 0; fail_call = i;
-            assert(!configure_MQTT_LOCAL_tls(&client));
+            assert(!configure_local_tls(&client));
             assert(calls == i);
         }
     } else if (scenario == "off") {
         setenv("MQTT_LOCAL_TLS", "false", 1);
-        assert(configure_MQTT_LOCAL_tls(&client));
+        assert(configure_local_tls(&client));
         assert(calls == 0);
         assert(!env_switch("MQTT_LOCAL_TLS", true));
         setenv("MQTT_LOCAL_TLS", "false", 1);
