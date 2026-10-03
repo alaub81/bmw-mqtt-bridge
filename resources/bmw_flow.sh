@@ -42,6 +42,7 @@
 # Behavior:
 #   - Read BMW_CLIENT_ID and BMW_GCID exclusively from the container environment.
 #   - Save tokens in BMW_TOKEN_DIR (default: /app/token).
+#   - Validate the complete token response before atomically replacing each file.
 #
 # Outputs (permissions 0600):
 #   access_token.txt
@@ -144,20 +145,34 @@ while (( LEFT > 0 )); do
   ERR="$(jq -r '.error // empty' <<<"$TOK")"
 
   if [[ -z "$ERR" ]]; then
-    echo
-    echo "✔ Tokens received:"
-    echo "$TOK" | jq '{access_token: .access_token|type, id_token: (.id_token|type), refresh_token: (.refresh_token|type), expires_in}'
+    # Require one JSON object containing three non-empty strings without whitespace.
+    if ! jq -se '
+      length == 1 and (.[0] |
+        type == "object" and
+        all(.access_token, .id_token, .refresh_token;
+            type == "string" and length > 0 and (test("[[:space:]]") | not)))
+    ' <<<"$TOK" >/dev/null; then
+      echo "✖ Invalid token response: access_token, id_token and refresh_token must be non-empty strings without whitespace." >&2
+      exit 1
+    fi
 
-    # Restrict existing files before truncating; umask protects newly created files.
-    for token_file in "$OUT_DIR"/{access_token.txt,id_token.txt,refresh_token.txt}; do
-      if [[ -f "$token_file" ]]; then
-        chmod 0600 "$token_file"
+    # Stage all files on the same filesystem before replacing any existing token.
+    STAGING_DIR="$(mktemp -d "$OUT_DIR/.bmw-tokens.XXXXXX")"
+    trap 'rm -rf -- "$STAGING_DIR"' EXIT
+    for token in access_token id_token refresh_token; do
+      if [[ -d "$OUT_DIR/$token.txt" ]]; then
+        echo "✖ Token path is a directory: $OUT_DIR/$token.txt" >&2
+        exit 1
       fi
+      jq -r --arg token "$token" '.[$token]' <<<"$TOK" > "$STAGING_DIR/$token.txt"
     done
-    jq -r '.access_token'  <<<"$TOK" > "$OUT_DIR/access_token.txt"
-    jq -r '.id_token'      <<<"$TOK" > "$OUT_DIR/id_token.txt"
-    jq -r '.refresh_token' <<<"$TOK" > "$OUT_DIR/refresh_token.txt"
+    # Each rename is atomic; the three files are not a single transaction.
+    for token in access_token id_token refresh_token; do
+      mv -f -- "$STAGING_DIR/$token.txt" "$OUT_DIR/$token.txt"
+    done
 
+    echo
+    echo "✔ Tokens received and saved."
     echo "Saved tokens in: $OUT_DIR"
     echo "→ MQTT password = contents of $OUT_DIR/id_token.txt"
     exit 0

@@ -165,6 +165,13 @@ The bridge renews tokens automatically and saves them with permissions `0600`
 all three token files, including `access_token.txt`. On startup, the entrypoint
 restricts existing token files to `0600` and removes the obsolete
 `token_refresh_response.json`; the bridge no longer stores that response.
+Before saving, authentication validates that the response contains all three
+tokens as non-empty strings without whitespace. It writes all temporary files
+in the token volume before replacing the existing files by atomic renames.
+Invalid responses or staging failures leave existing tokens unchanged, and
+temporary files are cleaned up on exit. Each file is replaced atomically;
+the three files are not a single transaction, so keep the bridge stopped during
+reauthentication as shown below.
 All state files live directly in `/app/token`, without an additional subdirectory.
 The entrypoint requires a complete pair at these paths. It does not automatically
 migrate older file names or subdirectories. Existing tokens are never overwritten
@@ -742,7 +749,7 @@ tests, an empty suite or failed tests return a non-zero exit code.
 The separate CI job **Offline regression tests** invokes exactly
 `./tests/test-check.sh`. These tests validate token handling and legacy-state rejection,
 environment-only configuration, GHCR image selection and shared development settings,
-token permissions during authentication and atomic writes, TLS settings,
+token response validation, permissions and atomic writes, TLS settings,
 MQTT status and shutdown handling, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
