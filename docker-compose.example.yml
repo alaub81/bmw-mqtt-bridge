@@ -21,7 +21,7 @@ services:
       BMB_MQTT_HOMIE: ${BMB_MQTT_HOMIE:-0}
       BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
     volumes:
-      - data_token:/app/token
+      - bmb_data_token:/app/token
     healthcheck:
       # Check process liveness and prolonged outages of either MQTT connection.
       test:
@@ -44,4 +44,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  data_token:
+  bmb_data_token:

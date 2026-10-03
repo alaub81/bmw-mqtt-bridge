@@ -108,11 +108,11 @@ services:
     image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
     env_file: .env
     volumes:
-      - data_token:/app/token
+      - bmb_data_token:/app/token
     restart: unless-stopped
 
 volumes:
-  data_token:
+  bmb_data_token:
 ```
 
 Minimal `.env`:
@@ -203,9 +203,9 @@ connections to both brokers.
 
 ### Persistent tokens: Docker volume
 
-Compose mounts the Docker volume `data_token` at `/app/token`. Docker Compose
+Compose mounts the Docker volume `bmb_data_token` at `/app/token`. Docker Compose
 prefixes its actual name with the project name (for example,
-`bmw-mqtt-bridge_data_token`). Configuration is supplied from the host `.env`
+`bmw-mqtt-bridge_bmb_data_token`). Configuration is supplied from the host `.env`
 through environment variables. No token secrets or host bind mount are required.
 
 The tokens live at these paths inside the container:
@@ -283,7 +283,7 @@ The release workflow periodically rebuilds version tags with updated base images
 so a version tag selects a code release rather than an immutable image digest.
 
 When switching an existing local-build installation to the GHCR image, keep
-the same project directory and Compose project name so the existing `data_token`
+the same project directory and Compose project name so the existing `bmb_data_token`
 volume is reused. Existing `.env` files can add `BMB_VERSION=latest`; without
 that line, the default is already `latest`.
 
@@ -316,7 +316,7 @@ or its issuing CA by mounting a PEM certificate file read-only:
 services:
   bmw-mqtt-bridge:
     volumes:
-      - data_token:/app/token
+      - bmb_data_token:/app/token
       - ./certs/mqtt-ca.crt:/app/certs/mqtt-ca.crt:ro
 ```
 
@@ -466,7 +466,7 @@ services:
       BMB_BMW_TOKEN_DIR: /app/state
       BMB_BMW_HEARTBEAT_FILE: /tmp/bridge-heartbeat
     volumes:
-      - data_token:/app/state
+      - bmb_data_token:/app/state
 ```
 
 Keep the existing connection environment settings when making this change.
