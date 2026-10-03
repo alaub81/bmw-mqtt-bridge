@@ -549,6 +549,10 @@ The CI lint job invokes this exact command. It never fixes or stages files and
 returns a non-zero exit code if any check fails or a required tool is missing.
 All checks run even when an earlier check fails; the final summary lists the
 results. No BMW account, token files, running MQTT broker or Docker daemon is needed.
+Cppcheck uses `--check-level=normal` instead of the exhaustive default in the
+pinned version. Progress messages are enabled; if it exceeds 120 seconds, the
+C++ check fails and subsequent checks still run. Pressing Ctrl+C exits with
+code 130 and a short interruption message instead of a Python traceback.
 
 ### Tool installation
 

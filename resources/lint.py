@@ -97,7 +97,7 @@ def main():
         return 1
     results = []
 
-    def check(label, paths, command=None, function=None):
+    def check(label, paths, command=None, function=None, timeout=None):
         if not paths:
             return
         print(f"\n==> {label} ({len(paths)} files)", flush=True)
@@ -106,7 +106,11 @@ def main():
                 print(f"Missing tool: {command[0]}. See README.md (Lint checks).", flush=True)
                 passed = False
             else:
-                passed = subprocess.run(command + paths, cwd=ROOT).returncode == 0
+                try:
+                    passed = subprocess.run(command + paths, cwd=ROOT, timeout=timeout).returncode == 0
+                except subprocess.TimeoutExpired:
+                    print(f"{label}: timed out after {timeout} seconds; check failed.", flush=True)
+                    passed = False
         else:
             passed = function(paths)
         results.append((label, passed))
@@ -127,10 +131,11 @@ def main():
     check("Python", [p for p in files if p.endswith(".py")],
           command=["ruff", "check", "--config", "ruff.toml"])
     check("C++", [p for p in files if p.endswith((".cpp", ".cc", ".cxx", ".h", ".hpp")) and p != VENDOR_HEADER],
-          command=["cppcheck", "--std=c++17", "--enable=warning,performance,portability",
+          command=["cppcheck", "--std=c++17", "--check-level=normal", "--report-progress",
+                   "--enable=warning,performance,portability",
                    "--error-exitcode=1", "--inline-suppr", "--max-configs=1", "--suppress=missingIncludeSystem",
                    "--suppress=toomanyconfigs", "--suppress=normalCheckLevelMaxBranches",
-                   f"--suppress=*:{VENDOR_HEADER}"])
+                   f"--suppress=*:{VENDOR_HEADER}"], timeout=120)
     check("Markdown", [p for p in files if p.endswith(".md")],
           command=["pymarkdown", "--config", ".pymarkdown.yaml", "--strict-config", "scan"])
     print("\n================ Summary ================", flush=True)
@@ -141,5 +146,13 @@ def main():
     return 0 if all(passed for _, passed in results) else 1
 
 
+def cli():
+    try:
+        return main()
+    except KeyboardInterrupt:
+        print("\nLint checks interrupted.", file=sys.stderr)
+        return 130
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

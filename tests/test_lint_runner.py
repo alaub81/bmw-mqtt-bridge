@@ -70,6 +70,37 @@ class LintRunnerTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(LINT.main(), 1)
 
+    def test_timed_out_cppcheck_fails_and_later_checks_still_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "test.cpp").write_text("int main() { return 0; }\n")
+            (root / "README.md").write_text("# Example\n")
+            commands = []
+
+            def run(command, **kwargs):
+                commands.append(command[0])
+                if command[0] == "cppcheck":
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                return subprocess.CompletedProcess(command, 0)
+
+            output = io.StringIO()
+            with patch.object(LINT, "ROOT", root), \
+                    patch.object(LINT, "project_files", return_value=["test.cpp", "README.md"]), \
+                    patch.object(LINT.shutil, "which", return_value="tool"), \
+                    patch.object(LINT.subprocess, "run", side_effect=run), \
+                    patch("sys.argv", ["lint.py"]), contextlib.redirect_stdout(output):
+                self.assertEqual(LINT.main(), 1)
+            self.assertEqual(commands, ["cppcheck", "pymarkdown"])
+            self.assertIn("timed out after 120 seconds", output.getvalue())
+
+    def test_interrupt_returns_130_without_a_traceback(self):
+        output = io.StringIO()
+        with patch.object(LINT, "main", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stderr(output):
+            self.assertEqual(LINT.cli(), 130)
+        self.assertIn("interrupted", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

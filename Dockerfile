@@ -43,8 +43,10 @@ COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
 
 # Default environment
-ENV BMW_TOKEN_DIR=/app/token \
-    BMW_LOAD_ENV_FILE=0 \
+# This is a directory path, not a token value; the token itself is stored in the volume.
+# hadolint ignore=DL3064
+ENV BMW_TOKEN_DIR=/app/token
+ENV BMW_LOAD_ENV_FILE=0 \
     BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMW_PORT=9000 \
     MQTT_LOCAL_HOST=host.docker.internal \
