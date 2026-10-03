@@ -22,7 +22,7 @@ if [[ $# -gt 0 && "$1" != "/app/bmw_mqtt_bridge" ]]; then
   exec "$@"
 fi
 
-# Tokens are created by bmw_flow.sh in the persistent data-token volume.
+# Tokens are created by bmw_flow.sh in the persistent data_token volume.
 if [[ ! -s "$ID_FILE" || ! -s "$RT_FILE" ]]; then
   echo "[entrypoint] Token pair missing, incomplete or empty in ${STATE_DIR}."
   echo "Please perform the initial authentication, e.g.:"

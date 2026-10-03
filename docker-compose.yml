@@ -20,7 +20,7 @@ services:
       BMB_MQTT_SPLIT_TOPICS: ${BMB_MQTT_SPLIT_TOPICS:-0}
       BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
     volumes:
-      - data-token:/app/token
+      - data_token:/app/token
     healthcheck:
       # Check process liveness and prolonged outages of either MQTT connection.
       test:
