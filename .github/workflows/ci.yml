@@ -1,4 +1,4 @@
-name: CI
+name: CI (lint, build, scan, tests)
 
 on:
   pull_request:
@@ -14,6 +14,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned CLI linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make
+          python -m venv .lint-venv
+          .lint-venv/bin/python -m pip install --requirement tests/requirements-lint.txt
+          .lint-venv/bin/python tests/install_lint_tools.py
+          echo "$GITHUB_WORKSPACE/.lint-venv/bin" >> "$GITHUB_PATH"
+          echo "$GITHUB_WORKSPACE/.lint-tools/bin" >> "$GITHUB_PATH"
+      - name: Hadolint
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: .
+          version: v0.11.0
+          ignore_paths: .lint-tools .lint-venv
+      - name: Yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_file: .yamllint.yaml
+          file_or_dir: .
+          strict: true
+      - name: Actionlint
+        run: actionlint -pyflakes=
+      - name: Ruff
+        shell: bash
+        run: |
+          mapfile -d '' sources < <(git ls-files -z '*.py')
+          test "${#sources[@]}" -gt 0
+          ruff check --config ruff.toml "${sources[@]}"
+      - name: Cppcheck
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          mapfile -d '' sources < <(git ls-files -z '*.cpp' '*.cc' '*.cxx' '*.h' '*.hpp' ':(exclude)resources/src/json.hpp')
+          test "${#sources[@]}" -gt 0
+          cppcheck --std=c++17 --check-level=normal --report-progress \
+            --enable=warning,performance,portability --error-exitcode=1 \
+            --inline-suppr --max-configs=1 --suppress=missingIncludeSystem \
+            --suppress=toomanyconfigs --suppress=normalCheckLevelMaxBranches \
+            '--suppress=*:resources/src/json.hpp' "${sources[@]}"
+      - name: Markdown
+        shell: bash
+        run: |
+          mapfile -d '' docs < <(git ls-files -z '*.md')
+          test "${#docs[@]}" -gt 0
+          pymarkdown --config .pymarkdown.yaml --strict-config scan "${docs[@]}"
+      - name: Text, JSON and dotenv examples
+        run: |
+          python - <<'PY'
+          from tests.lint import check_dotenv, check_json, check_text, project_files
+          files = project_files()
+          results = [
+              check_text(files),
+              check_json([path for path in files if path.endswith('.json')]),
+              check_dotenv([path for path in files if path.endswith('.env.example')]),
+          ]
+          raise SystemExit(0 if files and all(results) else 1)
+          PY
+
+  compose_config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Compose configuration
+        env:
+          BMW_CLIENT_ID: ci-client
+          BMW_GCID: ci-account
+        run: docker compose --env-file .env.example config --quiet
+
+  build_and_scan:
+    runs-on: ubuntu-24.04
+    needs: [lint, compose_config]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build bridge image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          pull: true
+          tags: bmw-mqtt-bridge:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bmw-mqtt-bridge:ci
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
   tests:
     name: Offline regression tests
     runs-on: ubuntu-24.04
@@ -26,23 +135,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends g++
-      - name: Run the same tests as before local deployment
-        run: ./test-check.sh
-  lint:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ make
-      - name: Install pinned lint dependencies
-        run: |
-          python -m venv .lint-venv
-          .lint-venv/bin/python -m pip install --requirement requirements-lint.txt
-          .lint-venv/bin/python resources/install_lint_tools.py
-      - name: Run the same checks as local development
-        run: ./linter-check.sh
+      - name: Run pre-deployment tests
+        run: ./tests/test-check.sh

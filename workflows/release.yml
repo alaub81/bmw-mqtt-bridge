@@ -79,8 +79,11 @@ jobs:
       matrix:
         tag: ${{ fromJSON(needs.select-tags.outputs.tags_json) }}
         image:
-          - name: 'bmw-mqtt-bridge'
-            dockerfile: 'Dockerfile'
+          - name: 'mediawiki-custom'
+            dockerfile: 'Dockerfile-mediawiki'
+            context: '.'
+          - name: 'memcachephp'
+            dockerfile: 'Dockerfile-memcachephp'
             context: '.'
 
     steps:
@@ -98,17 +101,15 @@ jobs:
           v="${{ matrix.tag }}"
           v="${v#v}"                 # v1.45.1 -> 1.45.1
 
-          IFS='.' read -r major minor patch _extra <<< "$v"
+          IFS='.' read -r major minor patch extra <<< "$v"
           if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
             echo "Tag is not x.y.z: '$v'" >&2
             exit 1
           fi
 
-          {
-            echo "full=$v"
-            echo "minor=$major.$minor"
-            echo "major=$major"
-          } >> "$GITHUB_OUTPUT"
+          echo "full=$v"           >> "$GITHUB_OUTPUT"   # 1.45.1
+          echo "minor=$major.$minor" >> "$GITHUB_OUTPUT" # 1.45
+          echo "major=$major"      >> "$GITHUB_OUTPUT"   # 1
 
       - name: Login to GHCR
         uses: docker/login-action@v4
@@ -202,8 +203,11 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - name: 'bmw-mqtt-bridge'
-            dockerfile: 'Dockerfile'
+          - name: 'mediawiki-custom'
+            dockerfile: 'Dockerfile-mediawiki'
+            context: '.'
+          - name: 'memcachephp'
+            dockerfile: 'Dockerfile-memcachephp'
             context: '.'
 
     steps:
@@ -216,10 +220,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "Only stable vMAJOR.MINOR.PATCH tags are supported: $GITHUB_REF_NAME" >&2
-            exit 1
-          }
           tags="$(git tag --list 'v*.*.*' --sort=-v:refname)"
           latest_tag="$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '1p' || true)"
           if [ "$GITHUB_REF_NAME" = "$latest_tag" ]; then

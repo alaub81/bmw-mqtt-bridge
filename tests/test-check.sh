@@ -2,7 +2,7 @@
 # Run the same offline regression suite locally and in CI before deployment.
 set -euo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$PROJECT_DIR"
 export PATH="$PROJECT_DIR/.lint-venv/bin:$PROJECT_DIR/.lint-tools/bin:$PATH"
 
@@ -18,4 +18,4 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-exec python3 resources/run_tests.py
+exec python3 tests/run_tests.py

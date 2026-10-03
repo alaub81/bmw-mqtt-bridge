@@ -21,7 +21,7 @@ RUN bash ./scripts/compile.sh
 # Runtime stage
 FROM debian:trixie-slim
 
-# Install runtime dependencies only (lean but includes nano for interactive setup)
+# Install runtime libraries and tools for the authentication helper
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmosquitto1 \
     libcurl4 \
@@ -43,17 +43,13 @@ COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
 
 # Default environment
-# This is a directory path, not a token value; the token itself is stored in the volume.
-# hadolint ignore=DL3064
-ENV BMW_TOKEN_DIR=/app/token
-ENV BMW_LOAD_ENV_FILE=0 \
-    BMW_HOST=customer.streaming-cardata.bmwgroup.com \
+ENV BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMW_PORT=9000 \
     MQTT_LOCAL_HOST=host.docker.internal \
     MQTT_LOCAL_PORT=1883 \
     MQTT_LOCAL_PREFIX=bmw/
 
-# Persist token/config directory
+# Persist token state
 VOLUME ["/app/token"]
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

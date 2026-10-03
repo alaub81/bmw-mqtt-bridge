@@ -1,4 +1,7 @@
 extends: default
+ignore: |
+  .lint-tools/
+  .lint-venv/
 rules:
   document-start: disable
   line-length: disable

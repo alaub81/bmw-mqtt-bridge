@@ -28,7 +28,7 @@
 //
 // Purpose:
 //   Bridge BMW CarData Streaming MQTT → local Mosquitto (republish as bmw/<VIN>/...)
-//   Uses: libmosquitto (MQTT v5), libcurl (not used at runtime here), nlohmann/json (header-only)
+//   Uses: libmosquitto (MQTT v5), libcurl (HTTPS token refresh), nlohmann/json (header-only)
 //
 // Features:
 //   - MQTT v5 with reason codes
@@ -38,16 +38,14 @@
 //   - Backoff (incl. jitter) to avoid quota/rate-limit storms
 //   - LWT on local broker + status topic
 //
-// Build (Debian/Ubuntu):
-//   g++ -std=c++17 -O2 -Wall -Wextra -pthread bmw_mqtt_bridge.cpp \
-//       $(pkg-config --cflags --libs libmosquitto) -lcurl
+// Built in the Docker builder stage using resources/compile.sh.
 //
 // Runtime configuration (env overrides):
 //   BMW_CLIENT_ID         : BMW CarData client ID (GUID)              (required; no default)
-//   BMW_GCID              : BMW BMW_GCID / username for the MQTT broker   (required; no default)
+//   BMW_GCID              : BMW GCID / username for the MQTT broker   (required; no default)
 //   BMW_HOST              : customer.streaming-cardata.bmwgroup.com   (default: set)
 //   BMW_PORT              : 9000                                      (default: 9000)
-//   MQTT_LOCAL_HOST       : 127.0.0.1                                 (default: 127.0.0.1)
+//   MQTT_LOCAL_HOST       : host.docker.internal                      (default: host.docker.internal)
 //   MQTT_LOCAL_PORT       : 1883                                      (default: 1883)
 //   MQTT_LOCAL_PREFIX     : bmw/                                      (default: bmw/)
 //   MQTT_LOCAL_CLIENT_ID  : local MQTT client ID (empty = generated ID)
@@ -56,13 +54,14 @@
 //   MQTT_LOCAL_TLS        : true/false (default false); encrypt local MQTT
 //   MQTT_LOCAL_TLS_VERIFY : true/false (default true); verify certificate chain and hostname
 //   MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
+//   MQTT_RETAIN           : 0/1 (default 0; status is always retained)
 //   MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
-//   BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false false (default: 5; 0 = immediately)
+//   BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
 //
 //
 // Notes:
 //   - id_token (a JWT) is used as the MQTT password; we parse its 'exp' to know validity.
-//   - Files written by this program use permissions 0600.
+//   - Token files written by this program use permissions 0644.
 //
 // ------------------------------------------------------------------------
 
@@ -86,7 +85,6 @@
 #include <sstream>
 #include <algorithm>
 #include <unistd.h>     // access()
-#include <sys/wait.h>   // WIFEXITED, WEXITSTATUS
 #include <ctime>
 #include <filesystem>
 #include <sys/stat.h>
@@ -110,9 +108,12 @@ static int env_int(const char* key, int defv){
     const char* v = std::getenv(key);
     if(!v || !*v) return defv;
     try{
-        return std::stoi(v);
-    }catch(...){
-        return defv;
+        size_t consumed = 0;
+        int value = std::stoi(v, &consumed);
+        if (v[consumed] != '\0') throw std::invalid_argument("trailing characters");
+        return value;
+    }catch(const std::exception&){
+        throw std::invalid_argument(std::string(key) + " must be an integer");
     }
 }
 static bool env_switch(const char* key, bool default_value) {
@@ -123,32 +124,6 @@ static bool env_switch(const char* key, bool default_value) {
     if (value == "false") return false;
     throw std::invalid_argument(std::string(key) + " must be true or false");
 }
-static std::string trim_copy(const std::string& s){
-    auto isws = [](unsigned char c){ return c=='\n'||c=='\r'||c=='\t'||c==' '; };
-    size_t a=0,b=s.size();
-    while(a<b && isws((unsigned char)s[a])) ++a;
-    while(b>a && isws((unsigned char)s[b-1])) --b;
-    return s.substr(a,b-a);
-}
-
-static void load_env_file(const std::string& path=".env"){
-    std::ifstream f(path);
-    if(!f) return;
-    std::string line;
-    while(std::getline(f, line)){
-        if(line.empty() || line[0]=='#') continue;
-        auto pos = line.find('=');
-        if(pos==std::string::npos) continue;
-        std::string key = trim_copy(line.substr(0,pos));
-        std::string val = trim_copy(line.substr(pos+1));
-        // einfache Quote-Handhabung
-        if(val.size()>=2 && ((val.front()=='"' && val.back()=='"') || (val.front()=='\'' && val.back()=='\''))){
-            val = val.substr(1, val.size()-2);
-        }
-        if(!key.empty()) setenv(key.c_str(), val.c_str(), 0);
-    }
-}
-
 // ===================== Configuration =====================
 static std::string BMW_CLIENT_ID;
 static std::string BMW_GCID;
@@ -170,7 +145,6 @@ static int         MQTT_RETAIN = 0; // 0 = no retain (default), 1 = retain
 // ===================== Globals =====================
 static std::atomic<bool> g_stop{false};
 static std::string g_id_token;
-static std::string g_refresh_token;
 static std::atomic<long> g_id_token_exp{0};
 
 static mosquitto* g_bmw = nullptr;
@@ -185,11 +159,9 @@ static std::mutex g_shutdown_mutex;
 static std::condition_variable g_shutdown_condition;
 static int g_shutdown_mid = 0;
 static bool g_shutdown_acknowledged = false;
-static std::atomic<long> g_last_connect_attempt{0};
 static std::atomic<long> g_next_connect_after{0}; // backoff fence for (re)connects
 
 static std::mt19937 rng{std::random_device{}()};
-static long jitter_ms(long base_ms){ std::uniform_int_distribution<int> d(-250,250); return base_ms + d(rng); }
 
 // ===================== Helpers =====================
 // MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.
@@ -230,14 +202,9 @@ static std::string dirname_of(const std::string& p){
     return d.empty() ? std::string(".") : d.string();
 }
 
-// Explicit state directory, with a user-specific fallback.
+// Internal container paths shared with Compose and the authentication helper.
 static std::string token_dir() {
-    const char* xdg = std::getenv("BMW_TOKEN_DIR");
-    const char* home = std::getenv("HOME");
-    if (xdg && *xdg) return std::string(xdg);
-    if (home && *home) return std::string(home) + "/.local/state/bmw-mqtt-bridge";
-    // very rare fallback (no HOME): stay relative but consistent
-    return std::string("./.local/state/bmw-mqtt-bridge");
+    return env_str("BMW_TOKEN_DIR", "/app/token");
 }
 
 // Health telemetry: main-loop liveness and continuous MQTT downtime.
@@ -264,23 +231,44 @@ static bool is_placeholder_uuid(const std::string& v){
     return v.empty() || std::regex_match(v, all_ones);
 }
 
-static void bmw_full_reconnect(){
-    // alten Client sauber neu aufbauen
+// Rebuild after a stalled loop or token rotation; called only by the main thread.
+static bool bmw_full_reconnect(){
     if (g_bmw) {
         mosquitto_loop_stop(g_bmw, true);
         mosquitto_destroy(g_bmw);
         g_bmw = nullptr;
     }
+    // Old callbacks have finished; they cannot restore a stale connected state.
+    g_connected = false;
     g_bmw = create_bmw_client();
     if (!g_bmw) {
-        std::cerr << "[bridge] rebuild failed (mosquitto_new)\n";
+        std::cerr << "[bridge] BMW client rebuild failed\n";
+        return false;
+    }
+    int rc = mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
+    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(g_bmw);
+    std::cerr << "[bridge] BMW rebuild+connect rc=" << rc
+              << " (" << mosquitto_strerror(rc) << ")\n";
+    if (rc != MOSQ_ERR_SUCCESS) {
+        mosquitto_destroy(g_bmw);
+        g_bmw = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static void check_bmw_connection(std::chrono::steady_clock::time_point now) {
+    static auto last_connected = now;
+    if (g_connected.load()) {
+        last_connected = now;
         return;
     }
-    mosquitto_loop_start(g_bmw);
-
-    int rc = mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
-    g_last_connect_attempt = time(nullptr);
-    std::cerr << "[bridge] rebuild+connect rc=" << rc << "\n";
+    if (g_stop || now - last_connected < std::chrono::seconds(30) ||
+        time(nullptr) < g_next_connect_after.load()) return;
+    // Retry even if DNS/TLS failed before CONNECT or the network loop has ended.
+    last_connected = now;
+    std::cerr << "[bridge] BMW MQTT disconnected for 30s; rebuilding client\n";
+    bmw_full_reconnect();
 }
 
 // Debounced status publisher for MQTT_LOCAL_STATUS_TOPIC
@@ -323,7 +311,7 @@ static void publish_status(std::chrono::steady_clock::time_point status_now = st
     if (connected) {
         disconnected_since = 0;
         if (!initialized || last_published != true || refresh_due) {
-            do_publish(true); // sofort auf true
+            do_publish(true); // Report a successful connection immediately.
         }
         return;
     }
@@ -331,7 +319,7 @@ static void publish_status(std::chrono::steady_clock::time_point status_now = st
     // connected == false
     if (BMW_STATUS_STABLE_DELAY == 0) {
         if (!initialized || last_published != false || refresh_due) {
-            do_publish(false); // sofort auf false
+            do_publish(false); // Report a disconnect immediately.
         }
         disconnected_since = 0;
         return;
@@ -339,7 +327,7 @@ static void publish_status(std::chrono::steady_clock::time_point status_now = st
     long now = time(nullptr);
     if (disconnected_since == 0) { disconnected_since = now; return; }
     if ((now - disconnected_since) >= BMW_STATUS_STABLE_DELAY && (!initialized || last_published != false || refresh_due)) {
-        do_publish(false); // nach Delay auf false
+        do_publish(false); // Report a disconnect after the debounce interval.
     }
 }
 
@@ -388,14 +376,7 @@ static std::string trim(std::string s) {
     return s.substr(i);
 }
 
-static bool write_file(const std::string& path, const std::string& data) {
-    std::ofstream f(path, std::ios::trunc);
-    if (!f) return false;
-    f << data;
-    return true;
-}
-
-// Ersetzt problematische Zeichen in Topic-Keys
+// Replace characters that would change the topic hierarchy.
 static std::string sanitize_key(std::string s){
     for (auto& c : s){
         if (c=='/' || c==' ' || c=='\t' || c=='\r' || c=='\n') c = '_';
@@ -503,8 +484,9 @@ static mosquitto* create_local_client() {
     if (rc == MOSQ_ERR_SUCCESS) {
         rc = mosquitto_will_set(client, MQTT_LOCAL_STATUS_TOPIC.c_str(), strlen(lwt), lwt, 0, true);
     }
-    if (rc == MOSQ_ERR_SUCCESS && !MQTT_LOCAL_USER.empty() && !MQTT_LOCAL_PASSWORD.empty()) {
-        rc = mosquitto_username_pw_set(client, MQTT_LOCAL_USER.c_str(), MQTT_LOCAL_PASSWORD.c_str());
+    if (rc == MOSQ_ERR_SUCCESS && !MQTT_LOCAL_USER.empty()) {
+        rc = mosquitto_username_pw_set(client, MQTT_LOCAL_USER.c_str(),
+                                       MQTT_LOCAL_PASSWORD.empty() ? nullptr : MQTT_LOCAL_PASSWORD.c_str());
     }
     if (rc != MOSQ_ERR_SUCCESS) {
         std::cerr << "[bridge] local client configuration failed: " << mosquitto_strerror(rc) << '\n';
@@ -571,7 +553,7 @@ static void check_local_connection(std::chrono::steady_clock::time_point now) {
 }
 
 // v5 connect callback (no property iteration, Debian header only forward-declares properties)
-static void on_bmw_connect_v5(struct mosquitto*, void*, int rc, int flags, const mosquitto_property* /*props*/){
+static void on_bmw_connect_v5(struct mosquitto* client, void*, int rc, int flags, const mosquitto_property* /*props*/){
     const char* reason = mosquitto_reason_string(rc);
     std::cout << "[bridge] BMW on_connect_v5 rc=" << rc
               << " (" << (reason ? reason : "unknown") << ")"
@@ -582,10 +564,10 @@ static void on_bmw_connect_v5(struct mosquitto*, void*, int rc, int flags, const
         g_connected = true;
         std::string sub = BMW_GCID + std::string("/+");
         int mid = 0;
-        int s_rc = mosquitto_subscribe(g_bmw, &mid, sub.c_str(), 1);
+        int s_rc = mosquitto_subscribe(client, &mid, sub.c_str(), 1);
         std::cerr << "[bridge] subscribe '" << sub << "' rc=" << s_rc << " mid=" << mid << "\n";
         publish_status();
-        g_last_connect_attempt = 0;
+        g_next_connect_after = 0;
         return;
     }
 
@@ -593,10 +575,10 @@ static void on_bmw_connect_v5(struct mosquitto*, void*, int rc, int flags, const
     long now = time(nullptr);
     long delay = 5; // default
     if (rc == 151) delay = 60;              // Quota exceeded
-    if (rc == 128 || rc == 133) delay = 20; // Unspecified / Server busy
+    if (rc == 128 || rc == 136 || rc == 137) delay = 20; // Unspecified / Server unavailable / Server busy
     if (rc == 135) delay = 30;              // Not authorized
 
-    g_next_connect_after = now + delay + (jitter_ms(0)/1000);
+    g_next_connect_after = now + delay;
     g_connected = false;
     publish_status();
 }
@@ -620,7 +602,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
     if (!m || !m->topic) return;
     std::string in_topic = m->topic ? m->topic : "";
 
-    // Republishing: 1) RAW (neu)  2) Legacy (alt)
+    // Republish both raw and legacy topics.
     auto pos = in_topic.find('/');
     std::string raw_topic    = MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
     std::string legacy_topic = MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
@@ -639,7 +621,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
               << "' legacy='"<< legacy_topic
               << "' bytes="<< m->payloadlen << "\n";
 
-    // Optional: Splitten aktiv?
+    // Optionally publish individual data fields.
     if (!MQTT_SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
         return;
 
@@ -679,25 +661,21 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
     }
 }
 
-// log callback: set g_last_connect_attempt when "sending CONNECT" appears; filter ping spam
+// Log MQTT failures and suppress ping noise.
 static void on_bmw_log(struct mosquitto* /*mosq*/, void* /*userdata*/,
                        int level, const char* str)
 {
     if(!str) return;
     if (std::strstr(str, "PINGREQ") || std::strstr(str, "PINGRESP")) return;
 
-    if (std::strstr(str, "sending CONNECT")) {
-        g_last_connect_attempt = time(nullptr);
-    }
-
-    // nur auf echte Fehler reagieren – KEIN generisches "SSL" matchen
+    // Match explicit error messages instead of every occurrence of SSL.
     bool is_err_level =
         (level == MOSQ_LOG_ERR) ||
         (level == MOSQ_LOG_WARNING);
 
     if (is_err_level &&
     (std::strstr(str, "OpenSSL Error") ||
-        std::strstr(str, "SSL error") ||               // nur Fehler, nicht jede SSL-Zeile
+        std::strstr(str, "SSL error") ||               // Match SSL errors only.
         std::strstr(str, "Connection reset by peer") ||
         std::strstr(str, "unexpected eof") ||
         std::strstr(str, "protocol error")))
@@ -705,7 +683,7 @@ static void on_bmw_log(struct mosquitto* /*mosq*/, void* /*userdata*/,
         g_connected = false;
         publish_status();
         long now = time(nullptr);
-        g_next_connect_after = now + 5 + (jitter_ms(0)/1000);
+        g_next_connect_after = now + 5;
     }
 
     std::cerr << "[bmw/log] level=" << level << " " << str << "\n";
@@ -726,11 +704,9 @@ static mosquitto* create_bmw_client() {
     mosquitto* m = mosquitto_new(BMW_CLIENT_ID.c_str(), true, nullptr);
     if(!m) return nullptr;
 
-    // enable MQTT v5
-    mosquitto_int_option(m, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
-    mosquitto_reconnect_delay_set(m, 1, 10, true);
+    int rc = mosquitto_int_option(m, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
+    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_reconnect_delay_set(m, 1, 10, true);
 
-    // callbacks (v5)
     mosquitto_connect_v5_callback_set(m, on_bmw_connect_v5);
     mosquitto_disconnect_callback_set(m, on_bmw_disconnect);
     mosquitto_disconnect_v5_callback_set(m, on_bmw_disconnect_v5);
@@ -738,15 +714,16 @@ static mosquitto* create_bmw_client() {
     mosquitto_log_callback_set(m, on_bmw_log);
     mosquitto_subscribe_callback_set(m, on_bmw_suback);
 
-    // TLS with system CA
-    mosquitto_tls_set(
-        m,
-        "/etc/ssl/certs/ca-certificates.crt",
-        NULL, NULL, NULL, NULL
-    );
-
-    // auth
-    mosquitto_username_pw_set(m, BMW_GCID.c_str(), g_id_token.c_str());
+    if (rc == MOSQ_ERR_SUCCESS) {
+        rc = mosquitto_tls_set(m, "/etc/ssl/certs/ca-certificates.crt",
+                              nullptr, nullptr, nullptr, nullptr);
+    }
+    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_username_pw_set(m, BMW_GCID.c_str(), g_id_token.c_str());
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << "[bridge] BMW client configuration failed: " << mosquitto_strerror(rc) << '\n';
+        mosquitto_destroy(m);
+        return nullptr;
+    }
 
     return m;
 }
@@ -755,15 +732,13 @@ static mosquitto* create_bmw_client() {
 
 static void sigint_handler(int){ g_stop = true; }
 
-int main(){
+int main() try {
     std::signal(SIGINT,  sigint_handler);
     std::signal(SIGTERM, sigint_handler);
 
-    // load .env from fixed token directory (created by bmw_flow.sh)
+    // Configuration comes exclusively from the container process environment.
     const std::string TDIR = token_dir();
-    const std::string ENV_PATH = (std::filesystem::path(TDIR) / ".env").string();
-    if (env_int("BMW_LOAD_ENV_FILE", 1) != 0) load_env_file(ENV_PATH);
-    const std::string heartbeat_path = env_str("BMW_HEARTBEAT_FILE", "");
+    const std::string heartbeat_path = env_str("BMW_HEARTBEAT_FILE", "/tmp/bmw-mqtt-bridge-heartbeat");
     // Do not reuse a heartbeat from a previous run of this container.
     if (!heartbeat_path.empty()) std::remove(heartbeat_path.c_str());
 
@@ -772,7 +747,7 @@ int main(){
     BMW_GCID              = env_str("BMW_GCID",             "");
     BMW_HOST              = env_str("BMW_HOST",          "customer.streaming-cardata.bmwgroup.com");
     BMW_PORT              = env_int("BMW_PORT",            9000);
-    MQTT_LOCAL_HOST       = env_str("MQTT_LOCAL_HOST",   "127.0.0.1");
+    MQTT_LOCAL_HOST       = env_str("MQTT_LOCAL_HOST",   "host.docker.internal");
     MQTT_LOCAL_PORT       = env_int("MQTT_LOCAL_PORT",     1883);
     MQTT_LOCAL_PREFIX     = env_str("MQTT_LOCAL_PREFIX", "bmw/");
     MQTT_LOCAL_CLIENT_ID  = env_str("MQTT_LOCAL_CLIENT_ID",  "");
@@ -780,11 +755,20 @@ int main(){
     MQTT_LOCAL_PASSWORD   = env_str("MQTT_LOCAL_PASSWORD",   "");
     MQTT_SPLIT_TOPICS     = env_int("MQTT_SPLIT_TOPICS",      0);
     MQTT_RETAIN           = env_int("MQTT_RETAIN",            0);
+    if (BMW_PORT < 1 || BMW_PORT > 65535 || MQTT_LOCAL_PORT < 1 || MQTT_LOCAL_PORT > 65535) {
+        throw std::invalid_argument("BMW_PORT and MQTT_LOCAL_PORT must be between 1 and 65535");
+    }
+    if ((MQTT_SPLIT_TOPICS != 0 && MQTT_SPLIT_TOPICS != 1) || (MQTT_RETAIN != 0 && MQTT_RETAIN != 1)) {
+        throw std::invalid_argument("MQTT_SPLIT_TOPICS and MQTT_RETAIN must be 0 or 1");
+    }
+    if (MQTT_LOCAL_PREFIX.find_first_of("+#") != std::string::npos) {
+        throw std::invalid_argument("MQTT_LOCAL_PREFIX must not contain MQTT wildcards (+ or #)");
+    }
 
     // fixed token files (no env overrides)
     ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token.txt").string();
     REFRESH_TOKEN_FILE  = (std::filesystem::path(TDIR) / "refresh_token.txt").string();
-    // Prefix-Fallback + normalization
+    // Normalize the topic prefix and apply its default.
     if (MQTT_LOCAL_PREFIX.empty()) {
         MQTT_LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
     }
@@ -803,17 +787,17 @@ int main(){
     // ensure token directory exists
     if (!std::filesystem::exists(TDIR)) {
         std::cerr << "✖ Token directory missing: " << TDIR << "\n"
-                  << "   Run scripts/bmw_flow.sh first.\n";
+                  << "   Run docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh first.\n";
         return 1;
     }
 
     // validate required IDs (no defaults; reject placeholders)
     if (is_placeholder_uuid(BMW_CLIENT_ID)) {
-        std::cerr << "✖ BMW_CLIENT_ID missing or placeholder in configuration (environment or " << ENV_PATH << ")\n";
+        std::cerr << "✖ BMW_CLIENT_ID missing or placeholder in container environment\n";
         return 1;
     }
     if (is_placeholder_uuid(BMW_GCID)) {
-        std::cerr << "✖ BMW_GCID missing or placeholder in configuration (environment or " << ENV_PATH << ")\n";
+        std::cerr << "✖ BMW_GCID missing or placeholder in container environment\n";
         return 1;
     }
 
@@ -823,11 +807,15 @@ int main(){
     std::ios::sync_with_stdio(false);
     std::cout.setf(std::ios::unitbuf); // auto-flush stdout
 
+    // Initialize libcurl before an initial refresh can make an HTTPS request.
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) return 2;
+
     // initial tokens
     g_id_token = trim(read_file(ID_TOKEN_FILE));
-    g_refresh_token = trim(read_file(REFRESH_TOKEN_FILE));
-    if(g_id_token.empty() || g_refresh_token.empty()){
+    const std::string refresh_token = trim(read_file(REFRESH_TOKEN_FILE));
+    if(g_id_token.empty() || refresh_token.empty()){
         std::cerr << "✖ id_token.txt or refresh_token.txt missing/empty in " << TDIR << "\n";
+        curl_global_cleanup();
         return 1;
     }
     g_id_token_exp = jwt_exp_unix(g_id_token);
@@ -835,12 +823,12 @@ int main(){
         std::cerr << "✖ invalid id_token (no exp) → trying refresh\n";
         if (!refresh_tokens()) {
             std::cerr << "✖ cannot obtain valid token, exiting\n";
+            curl_global_cleanup();
             return 1;
         }
     }
 
-    // libs init
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    // MQTT library initialization
     mosquitto_lib_init();
 
     // Start the local MQTT client asynchronously so the watchdog can supervise reconnects.
@@ -851,26 +839,11 @@ int main(){
     }
     publish_status();
 
-    // BMW broker
-    g_bmw = create_bmw_client();
-    if(!g_bmw){ std::cerr << "mosquitto_new bmw failed\n"; return 4; }
-    mosquitto_loop_start(g_bmw);
-
-    // initial connect (respect backoff)
-    if (time(nullptr) >= g_next_connect_after.load()) {
-        int rc = mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
-        if(rc != MOSQ_ERR_SUCCESS){
-            std::cerr << "connect BMW failed (host/port/TLS?) rc=" << rc << "\n";
-            // do not exit; watchdog will retry later
-        }
-    } else {
-        std::cerr << "[bridge] initial connect delayed due to backoff\n";
-    }
-
+    // Initial failures remain supervised by the same BMW downtime watchdog.
+    bmw_full_reconnect();
     std::cout << "[bridge] running… (Ctrl+C / SIGTERM to stop)\n";
 
-    // === Token refresh + CONNECT watchdog + backoff ===
-    const long CONNECT_TIMEOUT = 30; // seconds until we assume "CONNECT hung"
+    // Token refresh and MQTT downtime watchdogs.
     long last_refresh_attempt = 0;
     long last_successful_refresh = time(nullptr);
     constexpr long SOFT_MARGIN_SECS = 10*60;   // refresh 10 min before exp
@@ -911,6 +884,7 @@ int main(){
         previous_bmw_connected = bmw_connected;
 
         check_local_connection(heartbeat_now);
+        check_bmw_connection(heartbeat_now);
         publish_status();
 
         // 0) Backoff window active? → do not trigger new actions
@@ -930,20 +904,15 @@ int main(){
                 last_refresh_attempt    = now;
                 last_successful_refresh = now;
 
-                int upw_rc = mosquitto_username_pw_set(g_bmw, BMW_GCID.c_str(), g_id_token.c_str());
-                if (upw_rc != MOSQ_ERR_SUCCESS) {
-                    std::cerr << "[bridge] username_pw_set rc=" << upw_rc << "\n";
-                }
-
                 g_connected = false;
                 publish_status();
 
-                // leichtes Backoff + Jitter wie beim Script-Flow
+                // Pause briefly before reconnecting with the new token.
                 long delay_ms = 1500 + (rng()%500);
-                g_next_connect_after = time(nullptr) + 1; // 1s Sperre, nur zur Sicherheit
+                g_next_connect_after = time(nullptr) + 1; // Brief reconnect backoff.
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
 
-                // kompletter Rebuild → verhindert TLS/State-Races
+                // Rebuild after joining the old thread to replace credentials safely.
                 bmw_full_reconnect();
             } else {
                 last_refresh_attempt = now;
@@ -951,40 +920,6 @@ int main(){
                 std::cerr << "[bridge] refresh failed, retry soon\n";
             }
         }
-
-        // CONNECT watchdog: CONNECT sent but no CONNACK in time
-        long last_attempt = g_last_connect_attempt.load();
-        bool connect_hung = (last_attempt != 0) && ((now - last_attempt) > CONNECT_TIMEOUT);
-        if (connect_hung) {
-            if (now < g_next_connect_after.load()) continue;
-
-            std::cerr << "[bridge] CONNECT timed out or handshake failed -> full mosquitto client rebuild\n";
-            g_connected = false;
-            publish_status();
-
-            if (g_bmw) {
-                mosquitto_loop_stop(g_bmw, true);
-                mosquitto_destroy(g_bmw);
-                g_bmw = nullptr;
-            }
-
-            g_bmw = create_bmw_client();
-            if(!g_bmw){
-                std::cerr << "[bridge] rebuild failed (mosquitto_new)\n";
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                continue;
-            }
-            mosquitto_loop_start(g_bmw);
-
-            if (time(nullptr) >= g_next_connect_after.load()) {
-                int rc = mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
-                std::cerr << "[bridge] rebuild+connect rc=" << rc << "\n";
-                g_last_connect_attempt = time(nullptr);
-            } else {
-                std::cerr << "[bridge] rebuild done, connect delayed due to backoff\n";
-            }
-        }
-
     }
 
     // Cleanup
@@ -1002,6 +937,9 @@ int main(){
     curl_global_cleanup();
     std::cout << "[bridge] bye\n";
     return 0;
+} catch (const std::invalid_argument& error) {
+    std::cerr << "[bridge] invalid configuration: " << error.what() << '\n';
+    return 1;
 }
 
 
@@ -1055,20 +993,20 @@ static bool write_file_atomic(const std::string& final_path,
     fs::path fpath(final_path);
     fs::path dir = fpath.parent_path();
     std::error_code ec;
-    fs::create_directories(dir, ec); // ignorierbar, wir loggen nur bei echten Fehlern später
+    fs::create_directories(dir, ec); // File creation below reports failures.
 
-    // tmp-Datei im gleichen Verzeichnis erzeugen
+    // Create the temporary file in the target directory.
     std::string tmpl = (dir / (fpath.filename().string() + ".tmp.XXXXXX")).string();
     std::vector<char> buf(tmpl.begin(), tmpl.end());
     buf.push_back('\0');
 
-    int tfd = ::mkstemp(buf.data()); // erzeugt .../filename.tmp.ABC123
+    int tfd = ::mkstemp(buf.data()); // Creates a unique temporary file.
     if (tfd < 0) {
         std::cerr << "[bridge] mkstemp failed: " << std::strerror(errno) << "\n";
         return false;
     }
 
-    // Rechte setzen (unabhängig von umask)
+    // Set permissions independently of umask.
     if (::fchmod(tfd, mode) != 0) {
         std::cerr << "[bridge] fchmod failed: " << std::strerror(errno) << "\n";
         ::close(tfd);
@@ -1076,7 +1014,7 @@ static bool write_file_atomic(const std::string& final_path,
         return false;
     }
 
-    // schreiben (vollständig)
+    // Write the complete payload.
     const char* p = data.data();
     ssize_t left = (ssize_t)data.size();
     while (left > 0) {
@@ -1091,7 +1029,7 @@ static bool write_file_atomic(const std::string& final_path,
         left -= n; p += n;
     }
 
-    // flushen
+    // Flush file contents.
     if (::fsync(tfd) != 0) {
         std::cerr << "[bridge] fsync(tmp) failed: " << std::strerror(errno) << "\n";
         ::close(tfd);
@@ -1100,7 +1038,7 @@ static bool write_file_atomic(const std::string& final_path,
     }
     ::close(tfd);
 
-    // atomar ersetzen (gleiches FS ⇒ kein EXDEV)
+    // Replace atomically within the same filesystem.
     if (::rename(buf.data(), final_path.c_str()) != 0) {
         std::cerr << "[bridge] rename failed: " << std::strerror(errno)
                   << " (errno=" << errno << ")\n";
@@ -1108,7 +1046,7 @@ static bool write_file_atomic(const std::string& final_path,
         return false;
     }
 
-    // Verzeichnis-Flush (damit das Rename selbst crash-sicher ist)
+    // Flush the directory to persist the rename.
     int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
     if (dfd >= 0) {
         (void)::fsync(dfd);
@@ -1224,7 +1162,7 @@ static bool refresh_tokens() {
         return false;
     }
 
-    // --- Atomar direkt ins Zielverzeichnis schreiben (kein /tmp mehr) ---
+    // Write tokens atomically in their target directory.
     bool ok = true;
     ok &= write_file_atomic(id_path, new_id, 0644);
     ok &= write_file_atomic(rt_path, new_rt, 0644);
@@ -1237,7 +1175,6 @@ static bool refresh_tokens() {
 
     // update in-memory
     g_id_token      = new_id;
-    g_refresh_token = new_rt;
     g_id_token_exp  = jwt_exp_unix(g_id_token);
 
     std::cout << "✔ New Tokens saved:\n"

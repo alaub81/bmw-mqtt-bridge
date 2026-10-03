@@ -62,6 +62,18 @@ class LivenessTests(unittest.TestCase):
                         self.assertEqual(check(), 0)
                     else:
                         self.assertNotEqual(check(), 0)
+            # Exercise the application's default path and an explicit override.
+            heartbeat.write_text(f'{int(time.time())} 1 0 0\n')
+            default_command = command.replace('/tmp/bmw-mqtt-bridge-heartbeat', str(heartbeat))
+            default_env = dict(env)
+            default_env.pop('BMW_HEARTBEAT_FILE', None)
+            result = subprocess.run(['sh', '-c', default_command], env=default_env,
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            default_env['BMW_HEARTBEAT_FILE'] = str(base / 'missing-override')
+            result = subprocess.run(['sh', '-c', default_command], env=default_env,
+                                    capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
             heartbeat.unlink()
             self.assertNotEqual(check(), 0)
             heartbeat.write_text(f'{int(time.time())} 1 120 0\n')

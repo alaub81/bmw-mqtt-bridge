@@ -2,9 +2,6 @@ services:
   bmw-mqtt-bridge:
     build: .
     environment:
-      BMW_LOAD_ENV_FILE: "0"
-      BMW_TOKEN_DIR: /app/token
-      BMW_HEARTBEAT_FILE: /tmp/bmw-mqtt-bridge-heartbeat
       HEALTH_MQTT_DISCONNECT_TIMEOUT: ${HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
       BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
       BMW_GCID: ${BMW_GCID:?Set BMW_GCID in .env}
@@ -23,7 +20,7 @@ services:
       MQTT_SPLIT_TOPICS: ${MQTT_SPLIT_TOPICS:-0}
       MQTT_RETAIN: ${MQTT_RETAIN:-0}
     volumes:
-      - data-token:${BMW_TOKEN_DIR:-/app/token}
+      - data-token:/app/token
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -32,7 +29,7 @@ services:
         - CMD-SHELL
         - >-
           test /proc/1/exe -ef /app/bmw_mqtt_bridge &&
-          read -r heartbeat_time heartbeat_pid local_offline bmw_offline < "$$BMW_HEARTBEAT_FILE" &&
+          read -r heartbeat_time heartbeat_pid local_offline bmw_offline < "$${BMW_HEARTBEAT_FILE:-/tmp/bmw-mqtt-bridge-heartbeat}" &&
           test "$$heartbeat_pid" = 1 &&
           now=$$(date +%s) &&
           age=$$((now - heartbeat_time)) &&

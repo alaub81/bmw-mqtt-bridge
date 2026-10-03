@@ -7,8 +7,8 @@ your own MQTT broker. It authenticates through BMW's OAuth2 device flow,
 refreshes tokens automatically and forwards vehicle telemetry in real time.
 This fork is based on [dj0abr/bmw-mqtt-bridge](https://github.com/dj0abr/bmw-mqtt-bridge).
 
-Run it directly on Debian, Ubuntu or Raspberry Pi OS, or in Docker. This README
-contains the installation, configuration, operation and development documentation.
+Run the bridge in Docker using Docker Compose. This README contains the
+installation, configuration, operation and development documentation.
 
 ## Contents
 
@@ -16,11 +16,9 @@ contains the installation, configuration, operation and development documentatio
 - [Project structure](#project-structure)
 - [Get your BMW IDs](#get-your-bmw-ids)
 - [Docker installation](#docker-installation)
-- [Native installation](#native-installation)
 - [Environment variables](#environment-variables)
 - [MQTT topics](#mqtt-topics)
 - [MQTT retain](#mqtt-retain)
-- [Systemd service](#systemd-service)
 - [Lint checks](#lint-checks)
 - [Pre-deployment tests](#pre-deployment-tests)
 - [Security](#security)
@@ -36,10 +34,10 @@ contains the installation, configuration, operation and development documentatio
 - Docker Compose with persistent tokens and a main-loop heartbeat healthcheck.
 - Lightweight runtime using libmosquitto, libcurl and the bundled nlohmann/json header.
 
-The original project was tested on Debian 12, Ubuntu 22.04+ and Raspberry Pi OS
-Bookworm, with libmosquitto 2.0+, libcurl 7.74+ and g++ 10+. Native compilation
-requires C++17 and pkg-config. Docker usage requires Docker with the Compose
-plugin (Docker 24+ is the documented baseline).
+The application runs in Docker. The builder stage compiles the C++17 executable
+and installs development libraries; the runtime stage contains the bridge and
+OAuth tools. Use Docker with the Compose plugin (Docker 24+ is the documented
+baseline).
 
 ## Project structure
 
@@ -51,17 +49,19 @@ bmw-mqtt-bridge/
 │   │   └── json.hpp
 │   ├── bmw_flow.sh
 │   ├── compile.sh
-│   ├── docker-entrypoint.sh
-│   ├── install_deps.sh
-│   ├── install_lint_tools.py
-│   └── lint.py
+│   └── docker-entrypoint.sh
 ├── tests/
+│   ├── linter-check.sh
+│   ├── test-check.sh
+│   ├── install_lint_tools.py
+│   ├── lint.py
+│   ├── run_tests.py
+│   ├── requirements-lint.txt
+│   └── test_*.py
 ├── .github/workflows/
 ├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile
-├── linter-check.sh
-├── test-check.sh
 ├── LICENSE
 └── README.md
 ```
@@ -70,9 +70,8 @@ bmw-mqtt-bridge/
 
 Before you can use the bridge, you must retrieve your personal **BMW CarData identifiers**.
 
-For Docker, enter the IDs in the host `.env` copied from `.env.example`. For
-native use, `resources/bmw_flow.sh` can create a configuration file in the state
-directory. Obtain the IDs as follows:
+Enter the IDs in the host `.env` copied from `.env.example`. Obtain the IDs as
+follows:
 
 1. Go to the [MyBMW website](https://www.bmw-connecteddrive.com/)
    (You should already have an account and your car must be registered.)
@@ -103,31 +102,43 @@ cp .env.example .env
 Edit `.env` and set `BMW_CLIENT_ID`, `BMW_GCID` and your
 local MQTT settings. Docker Compose passes the listed values to the container
 as environment variables. The `.env` is not mounted or copied into the image.
-`BMW_LOAD_ENV_FILE=0` prevents the bridge and authentication script from loading
-an old `.env` from the state directory. Environment variables are visible to
+The bridge and authentication script never read or create a `.env` inside the
+container. Environment variables are visible to
 users with Docker access; passing values this way does not make them secrets.
+
+### Connecting to the Docker host
+
+The default `MQTT_LOCAL_HOST=host.docker.internal` addresses a broker reachable
+through the Docker host. `extra_hosts: ["host.docker.internal:host-gateway"]`
+adds the hostname mapping needed for this setup on Docker Engine on Linux.
+Docker Desktop provides `host.docker.internal` itself. See the
+[Docker host-gateway documentation](https://docs.docker.com/reference/cli/dockerd/#configure-host-gateway-ip)
+and [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host).
+
+If your broker has its own IP or DNS name, or runs as a service on the same
+Docker network (for example `MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
+entry is unnecessary and can be removed. The supplied Compose file keeps it
+so its default host setting also works on Linux.
 
 ### Persistent tokens: Docker volume
 
-Compose mounts the named Docker volume `data-token` at `/app/token`. The explicit
-`name: data-token` keeps its actual Docker name exactly `data-token`, without a
-Compose project prefix. Configuration is still supplied from the host `.env`
+Compose mounts the Docker volume `data-token` at `/app/token`. Docker Compose
+prefixes its actual name with the project name (for example,
+`bmw-mqtt-bridge_data-token`). Configuration is supplied from the host `.env`
 through environment variables. No token secrets or host bind mount are required.
 
 The tokens live at these paths inside the container:
 
 ```text
-/app/token/id_token
-/app/token/refresh_token
+/app/token/id_token.txt
+/app/token/refresh_token.txt
 ```
 
-The bridge renews tokens automatically and saves them with permissions `0600`.
+The bridge renews tokens automatically and saves them with permissions `0644`.
 All state files live directly in `/app/token`, without an additional subdirectory.
-On the first bridge start after an update, the entrypoint moves a complete token
-pair from the old `/app/token/bmw-mqtt-bridge` directory into `/app/token`. It also
-moves accompanying state files when their destination does not exist. Existing
-tokens in `/app/token` are never overwritten; incomplete pairs require
-reauthentication. An empty legacy directory is removed after migration.
+The entrypoint requires a complete pair at these paths. It does not automatically
+migrate older file names or subdirectories. Existing tokens are never overwritten
+by the entrypoint; incomplete pairs require reauthentication or explicit migration.
 The volume survives container replacement and `docker compose down`.
 `docker compose down -v` deletes it and requires authentication again.
 
@@ -235,7 +246,9 @@ and reset when the main loop observes a successful reconnect. The next successfu
 Docker healthcheck restores `healthy`; both connections must be within their
 allowed downtime. No vehicle messages are required, so a parked car does not
 cause a failed check. The heartbeat is removed on startup and clean shutdown.
-`BMW_HEARTBEAT_FILE` is supplied by Compose; without it, heartbeat writing is disabled.
+The bridge and healthcheck default to `/tmp/bmw-mqtt-bridge-heartbeat`.
+`BMW_HEARTBEAT_FILE` can override this internal path when explicitly supplied
+through the container environment.
 The file lives in `/tmp`, outside the persistent token volume.
 
 Docker does not automatically restart a running container solely because its
@@ -248,69 +261,23 @@ docker compose up -d --build --force-recreate
 docker compose ps
 ```
 
-## Native installation
-
-On Debian, Ubuntu or Raspberry Pi OS, install dependencies and compile:
-
-```bash
-git clone https://github.com/alaub81/bmw-mqtt-bridge.git
-cd bmw-mqtt-bridge
-bash resources/install_deps.sh
-bash resources/compile.sh
-bash resources/bmw_flow.sh
-```
-
-The dependency helper uses `sudo` to install the compiler, development libraries,
-OAuth tools and Mosquitto broker/clients. Ensure `pkg-config` is also installed.
-The first authentication run creates `~/.local/state/bmw-mqtt-bridge/.env` and
-opens it in `$EDITOR` (default: nano). Enter your `BMW_CLIENT_ID`, `BMW_GCID` and local
-MQTT settings, then rerun the helper. Open the displayed URL, complete the BMW
-login and consent, and follow the terminal instructions.
-
-The helper is needed for initial authentication and reauthentication. Regular
-bridge operation refreshes tokens itself and does not run the device flow.
-Start the compiled bridge with:
-
-```bash
-./resources/src/bmw_mqtt_bridge
-```
-
-If `BMW_TOKEN_DIR` is set, authentication and the bridge both use
-`BMW_TOKEN_DIR` directly instead of the default state directory. No application
-subdirectory is added to an explicitly configured path.
-
 ## Environment variables
 
-The tables below describe the connection and publishing settings.
-Values are read from the process environment. With `BMW_LOAD_ENV_FILE=1` (the
-bare-metal default), the `.env` in the token directory supplies fallback values;
-existing environment variables take precedence. Quotes in `.env` are supported.
-Docker sets `BMW_LOAD_ENV_FILE=0`: Compose passes configuration from the host
-`.env`, and no configuration file is loaded inside the container.
+Configuration is read exclusively from the container process environment.
+Docker Compose reads the host `.env` and passes the listed options to the
+container. Neither the bridge nor the authentication helper loads a file as
+fallback. An old `.env` in the token volume is ignored.
 
-In Docker, tokens are stored in the persistent volume `data-token`. They are created
-by the initial authentication and refreshed by the bridge itself. See
+Tokens are stored directly in the persistent volume mounted at `/app/token`.
+Initial authentication creates them; the bridge refreshes them itself. See
 [Docker installation](#docker-installation).
-
----
-
-### 📄 Token & .env Location (fixed)
-
-When file loading is enabled, the program loads `.env` from the **token directory** created by `resources/bmw_flow.sh`:
-
-- Default:
-  `$HOME/.local/state/bmw-mqtt-bridge/.env`
-- If `$BMW_TOKEN_DIR` is set:
-  `${BMW_TOKEN_DIR}/.env`
-
----
 
 ### 🌐 BMW CarData Broker
 
 | Variable    | Type | Default                                        | Required | Description |
 |-------------|------|-------------------------------------------------|----------|-------------|
 | `BMW_CLIENT_ID` | str  | *(none)*                                       | **Yes**  | BMW CarData **Client ID** (GUID) from the MyBMW portal. Placeholder values are rejected. |
-| `BMW_GCID`      | str  | *(none)*                                       | **Yes**  | BMW **BMW_GCID / username** for the MQTT broker (from “Show Connection Details”). Placeholder values are rejected. |
+| `BMW_GCID`      | str  | *(none)*                                       | **Yes**  | BMW **GCID / username** for the MQTT broker (from “Show Connection Details”). Placeholder values are rejected. |
 | `BMW_HOST`  | str  | `customer.streaming-cardata.bmwgroup.com`      | No       | BMW CarData MQTT hostname. |
 | `BMW_PORT`  | int  | `9000`                                          | No       | BMW CarData MQTT port. |
 
@@ -324,7 +291,7 @@ Validation on startup:
 
 | Variable         | Type | Default     | Required | Description |
 |------------------|------|-------------|----------|-------------|
-| `MQTT_LOCAL_HOST`     | str  | `127.0.0.1` | No       | Host/IP of your local MQTT broker. |
+| `MQTT_LOCAL_HOST`     | str  | `host.docker.internal` | No       | Host/IP of your local MQTT broker. |
 | `MQTT_LOCAL_PORT`     | int  | `1883`      | No       | Port of your local MQTT broker. |
 | `MQTT_LOCAL_CLIENT_ID` | str | *(empty)* | No | Client ID for your MQTT broker. Empty generates a random ID; configured IDs must be unique per running instance. |
 | `MQTT_LOCAL_USER`     | str  | *(empty)*   | No       | Username for local broker authentication (optional). |
@@ -356,14 +323,38 @@ Validation on startup:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BMW_LOAD_ENV_FILE` | `1` natively; `0` in Docker | `0` disables the state-directory `.env` loader. The bridge otherwise uses the file as fallback; existing process environment values take precedence. The authentication helper sources this file when loading is enabled. |
-| `BMW_TOKEN_DIR` | Unset natively; `/app/token` in Docker | Exact directory for state and token files; no subdirectory is appended. When unset, native operation uses `$HOME/.local/state/bmw-mqtt-bridge`. Use the same value for authentication and bridge operation. |
-| `BMW_HEARTBEAT_FILE` | Empty natively; `/tmp/bmw-mqtt-bridge-heartbeat` in Compose | Enables the main-loop heartbeat used by the Compose healthcheck. An empty value disables heartbeat writing. |
+| `BMW_TOKEN_DIR` | `/app/token` | Default token directory shared by authentication and bridge operation. Optional container environment override; adjust the volume mount to the same path. |
+| `BMW_HEARTBEAT_FILE` | `/tmp/bmw-mqtt-bridge-heartbeat` | Default heartbeat path shared by the main loop and Compose healthcheck. Optional container environment override. |
 | `HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
 
+The default Compose file omits both path variables. The application,
+authentication helper and entrypoint provide their own defaults, and the
+healthcheck uses the same heartbeat fallback. To customize the paths, edit the
+service configuration, for example:
+
+```yaml
+services:
+  bmw-mqtt-bridge:
+    environment:
+      BMW_TOKEN_DIR: /app/state
+      BMW_HEARTBEAT_FILE: /tmp/bridge-heartbeat
+    volumes:
+      - data-token:/app/state
+```
+
+Keep the existing connection environment settings when making this change.
+The token volume must be mounted at the chosen `BMW_TOKEN_DIR`; the healthcheck
+reads `BMW_HEARTBEAT_FILE` automatically. Adding these keys to the host `.env`
+alone does not pass them to the container; declare them under `environment`.
+
+Numeric options reject invalid values instead of silently falling back to defaults.
+Both MQTT ports must be between 1 and 65535; `MQTT_SPLIT_TOPICS` and
+`MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
+MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
+
 The supplied `.env.example` enables `MQTT_SPLIT_TOPICS=1`; the executable and Compose
-fallback default to `0` when it is not configured. Compose's default `MQTT_LOCAL_HOST`
-is `host.docker.internal`, while the native executable defaults to `127.0.0.1`.
+fallback default to `0` when it is not configured. The default `MQTT_LOCAL_HOST`
+is `host.docker.internal` in both Compose and the executable.
 
 ## MQTT topics
 
@@ -386,6 +377,22 @@ The watchdog runs in the main loop, so blocking token refresh or other main-loop
 work can delay a check. Vehicle messages received while the local connection is
 unavailable are not buffered or replayed. The Docker healthcheck measures both
 process liveness and prolonged outages of either MQTT connection.
+
+### BMW MQTT reconnect watchdog
+
+The BMW connection also has a 30-second downtime watchdog, using a monotonic
+clock. It recreates the client when the connection remains unavailable, including
+when DNS/TLS fails before a CONNECT is sent or the network loop terminates.
+Each replacement restores MQTT v5, TLS certificate verification, callbacks and
+the latest token credentials. Connection and network-loop startup errors are
+checked; failed replacements are retried after another 30 seconds. A successful
+CONNACK subscribes to the BMW topics again and publishes the current status.
+
+The watchdog starts timing after the application detects a disconnect; MQTT
+keepalive or TCP failure detection can take additional time. BMW server-error
+backoff postpones watchdog rebuilds. Token refresh and other
+blocking main-loop work can delay checks. Downtime used by the healthcheck is
+not reset by a rebuild; it resets only after a successful connection.
 
 ### Status Topic Prefix
 
@@ -504,45 +511,12 @@ or, alternatively, use MQTT Explorer
 - For **high-frequency or transient** topics, retain may be undesirable (it shows an outdated snapshot).
 - If you later change your `MQTT_LOCAL_PREFIX`, old retained messages under the previous prefix will remain in your broker until you remove them manually (see above).
 
-## Systemd service
-
-For native operation, create `/etc/systemd/system/bmw-mqtt-bridge.service`:
-
-```ini
-[Unit]
-Description=BMW CarData MQTT bridge
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=simple
-User=myUserName
-WorkingDirectory=/home/myUserName/bmw-mqtt-bridge
-ExecStart=/home/myUserName/bmw-mqtt-bridge/resources/src/bmw_mqtt_bridge
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Replace the username and paths with your installation. Run authentication first
-as that user so the state-directory `.env` and tokens belong to the service
-account. If you use a custom state directory, add `Environment=BMW_TOKEN_DIR=...`
-to the service and use the same value when authenticating.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now bmw-mqtt-bridge.service
-journalctl -u bmw-mqtt-bridge -f
-```
-
 ## Lint checks
 
 Run all project lint checks with:
 
 ```bash
-./linter-check.sh
+./tests/linter-check.sh
 ```
 
 The CI lint job invokes this exact command. It never fixes or stages files and
@@ -565,13 +539,14 @@ packages unchanged. Matching tools already present on PATH may be reused.
 
 ```bash
 python3 -m venv .lint-venv
-.lint-venv/bin/python -m pip install --requirement requirements-lint.txt
-.lint-venv/bin/python resources/install_lint_tools.py
-./linter-check.sh
+.lint-venv/bin/python -m pip install --requirement tests/requirements-lint.txt
+.lint-venv/bin/python tests/install_lint_tools.py
+./tests/linter-check.sh
 ```
 
-The same dependency installation is used in `.github/workflows/ci.yml`. Python
-package versions are pinned in `requirements-lint.txt`, and native tool
+CI defines separate linter steps in `.github/workflows/ci.yml` and does not
+invoke `tests/linter-check.sh`. Python
+package versions are pinned in `tests/requirements-lint.txt`, and native tool
 versions/checksums in `lint-tools.json`.
 The lint script automatically adds project-local tool directories to PATH.
 
@@ -616,19 +591,43 @@ This command performs lint checks, not deployment or token authentication.
 Run regression tests with the shared local/CI entrypoint:
 
 ```bash
-./test-check.sh
+./tests/test-check.sh
 ```
+
+## CI and container releases
+
+`.github/workflows/ci.yml` defines individual linter steps: Hadolint,
+ShellCheck, yamllint, actionlint, Ruff, Cppcheck and PyMarkdown. It also checks
+text hygiene, JSON and dotenv examples. CI validates Compose, builds the bridge
+image and scans it with Trivy. The offline regression suite remains a separate
+job using `./tests/test-check.sh`.
+
+`.github/workflows/release.yml` builds and publishes only this project's
+`Dockerfile` to `ghcr.io/<repository-owner>/bmw-mqtt-bridge` for `linux/amd64`
+and `linux/arm64`. Push a stable version tag to release a container:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Use the next unused version for your project. The versioned image tag is `1.2.3`.
+The newest stable release also updates `1.2`, `1` and `latest`. The workflow
+retains the template's weekly rebuild of recent tags and its manual rebuild
+option; older rebuilds do not overwrite the newest release's aliases. Critical,
+fixable Trivy findings prevent publication. No BMW credentials are needed to
+build or publish the image.
 
 ## Pre-deployment tests
 
 Run both checks before building and deploying:
 
 ```bash
-./linter-check.sh && ./test-check.sh && \
+./tests/linter-check.sh && ./tests/test-check.sh && \
   docker compose up -d --build --force-recreate
 ```
 
-`test-check.sh` runs all tests under `tests/` from any working directory. It uses
+`tests/test-check.sh` runs all tests under `tests/` from any working directory. It uses
 the project-local `.lint-venv` Python when available, otherwise system Python.
 Requirements are Python 3.9+, Bash, Git, a C++17 compiler available as `c++`, and
 Docker CLI with the Compose plugin. No running Docker daemon, BMW account,
@@ -636,8 +635,8 @@ production tokens or MQTT broker is required. Missing dependencies, skipped
 tests, an empty suite or failed tests return a non-zero exit code.
 
 The separate CI job **Offline regression tests** invokes exactly
-`./test-check.sh`. These tests validate token handling/migration, environment
-configuration, TLS settings, MQTT status and shutdown handling, heartbeat and
+`./tests/test-check.sh`. These tests validate token handling and legacy-state rejection, environment
+environment-only configuration, TLS settings, MQTT status and shutdown handling, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end

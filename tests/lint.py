@@ -85,7 +85,7 @@ def check_dotenv(files):
 
 def main():
     if len(sys.argv) != 1:
-        print("Usage: ./linter-check.sh (read-only; no arguments)", file=sys.stderr)
+        print("Usage: ./tests/linter-check.sh (read-only; no arguments)", file=sys.stderr)
         return 2
     try:
         files = project_files()
