@@ -1,6 +1,6 @@
 services:
   bmw-mqtt-bridge:
-    build: .
+    image: ghcr.io/alaub81/bmw-mqtt-bridge:${IMAGE_VERSION:-latest}
     environment:
       HEALTH_MQTT_DISCONNECT_TIMEOUT: ${HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
       BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
@@ -19,6 +19,8 @@ services:
       MQTT_LOCAL_TLS_CA_FILE: ${MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
       MQTT_SPLIT_TOPICS: ${MQTT_SPLIT_TOPICS:-0}
       MQTT_RETAIN: ${MQTT_RETAIN:-0}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - data-token:/app/token
     healthcheck:

@@ -19,7 +19,9 @@ installation, configuration, operation and development documentation.
 - [Environment variables](#environment-variables)
 - [MQTT topics](#mqtt-topics)
 - [MQTT retain](#mqtt-retain)
+- [Local development](#local-development)
 - [Lint checks](#lint-checks)
+- [CI and container releases](#ci-and-container-releases)
 - [Pre-deployment tests](#pre-deployment-tests)
 - [Security](#security)
 - [License](#license)
@@ -37,8 +39,10 @@ installation, configuration, operation and development documentation.
 The application runs in Docker using Alpine 3.24. The builder stage compiles the C++17 executable
 and installs development libraries; the runtime stage contains the bridge and
 OAuth tools. Use Docker with the Compose plugin (Docker 24+ is the documented
-baseline). The `Dockerfile` builds the Alpine image used by Compose, CI and
-releases. `Dockerfile-Debian` is retained as an alternative build definition.
+baseline). Host deployment uses the prebuilt GitHub Container Registry image
+`ghcr.io/alaub81/bmw-mqtt-bridge` for `linux/amd64` and `linux/arm64`.
+The `Dockerfile` builds the Alpine image used by CI, releases and local development.
+`Dockerfile-Debian` is retained as an alternative build definition.
 
 ## Project structure
 
@@ -60,8 +64,9 @@ bmw-mqtt-bridge/
 │   ├── requirements-lint.txt
 │   └── test_*.py
 ├── .github/workflows/
-├── .env.example
+├── .env.sample
 ├── docker-compose.yml
+├── docker-compose.dev.yml
 ├── Dockerfile
 ├── Dockerfile-Debian
 ├── LICENSE
@@ -72,7 +77,7 @@ bmw-mqtt-bridge/
 
 Before you can use the bridge, you must retrieve your personal **BMW CarData identifiers**.
 
-Enter the IDs in the host `.env` copied from `.env.example`. Obtain the IDs as
+Enter the IDs in the host `.env` copied from `.env.sample`. Obtain the IDs as
 follows:
 
 1. Go to the [MyBMW website](https://www.bmw-connecteddrive.com/)
@@ -93,34 +98,53 @@ At **CARDATA STREAM** don't forget to click `Change data selection` and activate
 
 ### Configuration
 
-Clone this fork and prepare the host configuration:
+The host only needs `docker-compose.yml` and a configured `.env`; no source code,
+compiler or local image build is required. Download the Compose file and sample:
 
 ```bash
-git clone https://github.com/alaub81/bmw-mqtt-bridge.git
+mkdir -p bmw-mqtt-bridge
 cd bmw-mqtt-bridge
-cp .env.example .env
+curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/alaub81/bmw-mqtt-bridge/main/docker-compose.yml
+curl -fsSLo .env.sample https://raw.githubusercontent.com/alaub81/bmw-mqtt-bridge/main/.env.sample
+cp .env.sample .env
+chmod 600 .env
 ```
 
 Edit `.env` and set `BMW_CLIENT_ID`, `BMW_GCID` and your
-local MQTT settings. Docker Compose passes the listed values to the container
+local MQTT settings. `IMAGE_VERSION=latest` selects the newest stable release;
+use a published tag such as `IMAGE_VERSION=1.2.3` (without `v`) to select a version.
+An unset or empty `IMAGE_VERSION` also falls back to `latest`. A push to `main`
+runs CI; publishing a release requires a stable Git tag. See
+[CI and container releases](#ci-and-container-releases).
+
+Docker Compose passes the connection settings to the container
 as environment variables. The `.env` is not mounted or copied into the image.
+`IMAGE_VERSION` is used only by Compose to select the image tag.
 The bridge and authentication script never read or create a `.env` inside the
 container. Environment variables are visible to
 users with Docker access; passing values this way does not make them secrets.
 
+Public GHCR images can be pulled without login. If pulling reports `denied` or
+`403 Forbidden`, check that the package is public and the selected tag has been
+published. For a private package, run `docker login ghcr.io` using a GitHub
+personal access token (classic) with `read:packages` and access to the package;
+see [GitHub's container registry authentication documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+
 ### Connecting to the Docker host
 
 The default `MQTT_LOCAL_HOST=host.docker.internal` addresses a broker reachable
-through the Docker host. `extra_hosts: ["host.docker.internal:host-gateway"]`
-adds the hostname mapping needed for this setup on Docker Engine on Linux.
-Docker Desktop provides `host.docker.internal` itself. See the
+through the Docker host. The supplied Compose configuration includes
+`extra_hosts: ["host.docker.internal:host-gateway"]` for Docker Engine on Linux.
+Docker Desktop also supports access to host services. See the
 [Docker host-gateway documentation](https://docs.docker.com/reference/cli/dockerd/#configure-host-gateway-ip)
 and [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host).
 
 If your broker has its own IP or DNS name, or runs as a service on the same
 Docker network (for example `MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
-entry is unnecessary. If you use `host.docker.internal` on Docker Engine on
-Linux, add the mapping to the service under `extra_hosts`.
+entry is unnecessary and can be removed. The broker must listen on an interface
+reachable from the container; a broker bound only to `127.0.0.1` on a Linux host
+is not reachable through the bridge network. No port publishing is needed for
+the bridge because it makes outbound connections to both brokers.
 
 ### Persistent tokens: Docker volume
 
@@ -147,7 +171,7 @@ The volume survives container replacement and `docker compose down`.
 ### Initial authentication or reauthentication
 
 ```bash
-docker compose build
+docker compose pull
 docker compose stop bmw-mqtt-bridge
 docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh
 ```
@@ -174,6 +198,28 @@ docker compose up -d --force-recreate
 ```
 
 A plain restart does not apply changed Compose environment variables.
+
+### Image updates and switching versions
+
+Set `IMAGE_VERSION` in `.env` to the desired published tag, then download and apply it:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 bmw-mqtt-bridge
+```
+
+Run these commands to update `latest` too; running containers do not update
+automatically when GitHub publishes an image. The token volume survives image
+updates. To switch back, set a previous compatible tag and repeat the commands.
+The release workflow periodically rebuilds version tags with updated base images,
+so a version tag selects a code release rather than an immutable image digest.
+
+When switching an existing local-build installation to the GHCR image, keep
+the same project directory and Compose project name so the existing `data-token`
+volume is reused. Existing `.env` files can add `IMAGE_VERSION=latest`; without
+that line, the default is already `latest`.
 
 ### TLS connection to your own MQTT broker
 
@@ -213,10 +259,10 @@ the certificate's hostname/IP. Without a custom CA file, the image's system CA
 bundle is used. A missing/unreadable CA file causes startup to fail rather than
 falling back to plaintext. Mutual TLS with client certificates is not configured.
 
-After changing settings or the code:
+After changing settings:
 
 ```bash
-docker compose up -d --build --force-recreate
+docker compose up -d --force-recreate
 ```
 
 ### Local MQTT client ID
@@ -228,7 +274,8 @@ This setting is independent of the BMW OAuth `BMW_CLIENT_ID` and `MQTT_LOCAL_PRE
 
 ### Compose healthcheck
 
-The healthcheck is defined only in `docker-compose.yml`. Every 30 seconds it checks
+The healthcheck is defined in `docker-compose.yml` and inherited by
+`docker-compose.dev.yml`. Every 30 seconds it checks
 that PID 1 is executing `/app/bmw_mqtt_bridge` and that the heartbeat in
 `/tmp/bmw-mqtt-bridge-heartbeat` belongs to PID 1 and is no more than 90 seconds
 old. Startup grace is 30 seconds, timeout is 5 seconds, and 3 failed checks mark
@@ -256,11 +303,11 @@ The file lives in `/tmp`, outside the persistent token volume.
 Docker does not automatically restart a running container solely because its
 health status is unhealthy. The existing restart policy handles process exits.
 
-Rebuild the bridge and view the status:
+View the status and the latest healthcheck results:
 
 ```bash
-docker compose up -d --build --force-recreate
 docker compose ps
+docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q bmw-mqtt-bridge)"
 ```
 
 ## Environment variables
@@ -273,6 +320,12 @@ fallback. An old `.env` in the token volume is ignored.
 Tokens are stored directly in the persistent volume mounted at `/app/token`.
 Initial authentication creates them; the bridge refreshes them itself. See
 [Docker installation](#docker-installation).
+
+### Container image
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `IMAGE_VERSION` | `latest` | GHCR image tag selected by host Compose. Use a published version without `v`, such as `1.2.3`. Empty/unset uses `latest`. Not passed to the bridge; local development uses its own image. |
 
 ### 🌐 BMW CarData Broker
 
@@ -354,7 +407,7 @@ Both MQTT ports must be between 1 and 65535; `MQTT_SPLIT_TOPICS` and
 `MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
 
-The supplied `.env.example` enables `MQTT_SPLIT_TOPICS=1`; the executable and Compose
+The supplied `.env.sample` enables `MQTT_SPLIT_TOPICS=1`; the executable and Compose
 fallback default to `0` when it is not configured. The default `MQTT_LOCAL_HOST`
 is `host.docker.internal` in both Compose and the executable.
 
@@ -392,7 +445,9 @@ CONNACK subscribes to the BMW topics again and publishes the current status.
 
 The watchdog starts timing after the application detects a disconnect; MQTT
 keepalive or TCP failure detection can take additional time. BMW server-error
-backoff postpones watchdog rebuilds. Token refresh and other
+backoff postpones watchdog rebuilds and token refresh attempts. Libmosquitto's
+automatic reconnects use their separate 1-to-10-second delay and do not consult
+that backoff fence. Token refresh and other
 blocking main-loop work can delay checks. Downtime used by the healthcheck is
 not reset by a rebuild; it resets only after a successful connection.
 
@@ -513,6 +568,46 @@ or, alternatively, use MQTT Explorer
 - For **high-frequency or transient** topics, retain may be undesirable (it shows an outdated snapshot).
 - If you later change your `MQTT_LOCAL_PREFIX`, old retained messages under the previous prefix will remain in your broker until you remove them manually (see above).
 
+## Local development
+
+Clone the repository and configure your local `.env`:
+
+```bash
+git clone https://github.com/alaub81/bmw-mqtt-bridge.git
+cd bmw-mqtt-bridge
+cp .env.sample .env
+chmod 600 .env
+```
+
+Set your BMW IDs and MQTT connection settings, then build and authenticate:
+
+```bash
+docker compose -f docker-compose.dev.yml build
+docker compose -f docker-compose.dev.yml stop bmw-mqtt-bridge
+docker compose -f docker-compose.dev.yml run --rm -it bmw-mqtt-bridge ./bmw_flow.sh
+docker compose -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.dev.yml logs -f bmw-mqtt-bridge
+```
+
+`docker-compose.dev.yml` inherits the runtime settings, healthcheck and token
+mount from `docker-compose.yml` through
+[Compose extends](https://docs.docker.com/compose/how-tos/multiple-compose-files/extends/).
+It builds the local `Dockerfile` as `bmw-mqtt-bridge:dev` with `pull_policy: build`,
+so development uses your working tree regardless of `IMAGE_VERSION`. Only the
+top-level volume declaration is repeated because `extends` does not inherit it.
+Always include `-f docker-compose.dev.yml` for development commands, including
+`stop`, `down`, `run` and `logs`. Plain `docker compose` selects the GHCR deployment.
+
+Both configurations share the same project volume when run from the same
+directory. Skip authentication when valid tokens are already present, and run
+only one bridge per BMW account/token volume.
+
+After code changes, rebuild and replace the development container:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build --force-recreate
+```
+
 ## Lint checks
 
 Run all project lint checks with:
@@ -569,7 +664,7 @@ installed dependencies are excluded, so the check does not inspect local secrets
 | Python scripts and tests | Ruff |
 | C++ source and project headers | Cppcheck, C++17, default configuration |
 | JSON configuration and manifests | JSON syntax and duplicate keys |
-| `.env.example` | Assignment syntax and duplicate keys; no shell execution |
+| `.env.sample` | Assignment syntax and duplicate keys; no shell execution |
 | Markdown documentation and issue templates | PyMarkdown |
 
 The vendored `resources/src/json.hpp` receives text encoding/newline/merge-marker
@@ -622,11 +717,11 @@ build or publish the image.
 
 ## Pre-deployment tests
 
-Run both checks before building and deploying:
+Run both checks before building and starting a local development container:
 
 ```bash
 ./tests/linter-check.sh && ./tests/test-check.sh && \
-  docker compose up -d --build --force-recreate
+  docker compose -f docker-compose.dev.yml up -d --build --force-recreate
 ```
 
 `tests/test-check.sh` runs all tests under `tests/` from any working directory. It uses
@@ -637,8 +732,9 @@ production tokens or MQTT broker is required. Missing dependencies, skipped
 tests, an empty suite or failed tests return a non-zero exit code.
 
 The separate CI job **Offline regression tests** invokes exactly
-`./tests/test-check.sh`. These tests validate token handling and legacy-state rejection, environment
-environment-only configuration, TLS settings, MQTT status and shutdown handling, heartbeat and
+`./tests/test-check.sh`. These tests validate token handling and legacy-state rejection,
+environment-only configuration, GHCR image selection and shared development settings,
+TLS settings, MQTT status and shutdown handling, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end

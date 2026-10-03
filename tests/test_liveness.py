@@ -15,7 +15,7 @@ class LivenessTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('docker'), 'Compose unavailable')
     def test_compose_heartbeat_and_process_check(self):
         env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-BMW_GCID')
-        result = subprocess.run(['docker', 'compose', '--env-file', '.env.example',
+        result = subprocess.run(['docker', 'compose', '--env-file', '.env.sample',
                                  'config', '--format', 'json'], cwd=ROOT, env=env,
                                 text=True, capture_output=True, check=True)
         health = json.loads(result.stdout)['services']['bmw-mqtt-bridge']['healthcheck']

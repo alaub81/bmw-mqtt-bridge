@@ -1,0 +1,13 @@
+# Use with: docker compose -f docker-compose.dev.yml up -d --build
+services:
+  bmw-mqtt-bridge:
+    extends:
+      file: docker-compose.yml
+      service: bmw-mqtt-bridge
+    build: .
+    image: bmw-mqtt-bridge:dev
+    pull_policy: build
+
+# Top-level resources are not inherited by extends.
+volumes:
+  data-token:

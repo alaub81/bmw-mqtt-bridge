@@ -1,7 +1,7 @@
 .git
 .env
 .env.*
-!.env.example
+!.env.sample
 data/
 secrets/
 site/

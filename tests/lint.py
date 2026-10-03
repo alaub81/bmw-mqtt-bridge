@@ -119,7 +119,7 @@ def main():
     check("JSON syntax and duplicate keys",
           [p for p in files if p.endswith(".json")],
           function=check_json)
-    check("Dotenv examples", [p for p in files if p.endswith(".env.example") or Path(p).name == ".env.example"],
+    check("Dotenv samples", [p for p in files if Path(p).name == ".env.sample"],
           function=check_dotenv)
     check("ShellCheck", [p for p in files if p.endswith(".sh")], command=["shellcheck"])
     check("Hadolint", [p for p in files if Path(p).name.startswith("Dockerfile")],

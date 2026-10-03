@@ -56,10 +56,10 @@ class LintRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "bad.json").write_text('{"key": 1, "key": 2}\n')
-            (root / ".env.example").write_text("KEY=1\nKEY=2\n")
+            (root / ".env.sample").write_text("KEY=1\nKEY=2\n")
             with patch.object(LINT, "ROOT", root), contextlib.redirect_stdout(io.StringIO()):
                 self.assertFalse(LINT.check_json(["bad.json"]))
-                self.assertFalse(LINT.check_dotenv([".env.example"]))
+                self.assertFalse(LINT.check_dotenv([".env.sample"]))
 
     def test_missing_linter_fails_instead_of_silently_skipping_files(self):
         with tempfile.TemporaryDirectory() as temporary:

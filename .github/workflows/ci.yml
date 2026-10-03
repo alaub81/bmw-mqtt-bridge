@@ -87,7 +87,7 @@ jobs:
           results = [
               check_text(files),
               check_json([path for path in files if path.endswith('.json')]),
-              check_dotenv([path for path in files if path.endswith('.env.example')]),
+              check_dotenv([path for path in files if path.endswith('.env.sample')]),
           ]
           raise SystemExit(0 if files and all(results) else 1)
           PY
@@ -100,7 +100,9 @@ jobs:
         env:
           BMW_CLIENT_ID: ci-client
           BMW_GCID: ci-account
-        run: docker compose --env-file .env.example config --quiet
+        run: |
+          docker compose --env-file .env.sample config --quiet
+          docker compose --env-file .env.sample -f docker-compose.dev.yml config --quiet
 
   build_and_scan:
     runs-on: ubuntu-24.04

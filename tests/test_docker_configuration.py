@@ -131,24 +131,51 @@ class DockerConfigurationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
     def test_compose_forwards_all_options_and_keeps_token_mount_consistent(self):
-        env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-gcid',
-                   BMW_TOKEN_DIR='/some/host/path')
-        result = subprocess.run(['docker', 'compose', '--env-file', '.env.example',
-                                 'config', '--format', 'json'], cwd=ROOT, env=env,
-                                capture_output=True, text=True, check=True)
-        service = json.loads(result.stdout)['services']['bmw-mqtt-bridge']
-        configured = service['environment']
         example_keys = {line.split('=', 1)[0] for line in
-                        (ROOT / '.env.example').read_text().splitlines()
+                        (ROOT / '.env.sample').read_text().splitlines()
                         if line and not line.startswith('#')}
-        self.assertTrue(example_keys <= configured.keys())
-        self.assertNotIn('BMW_LOAD_ENV_FILE', configured)
-        self.assertNotIn('BMW_TOKEN_DIR', example_keys)
-        self.assertNotIn('BMW_HEARTBEAT_FILE', example_keys)
-        volume = next(volume for volume in service['volumes'] if volume['source'] == 'data-token')
-        self.assertEqual(volume['target'], '/app/token')
-        self.assertNotIn('BMW_TOKEN_DIR', configured)
-        self.assertNotIn('BMW_HEARTBEAT_FILE', configured)
+        for compose_file in ('docker-compose.yml', 'docker-compose.dev.yml'):
+            with self.subTest(compose_file=compose_file):
+                service = self.compose_service(compose_file, BMW_TOKEN_DIR='/some/host/path')
+                configured = service['environment']
+                self.assertEqual(example_keys - {'IMAGE_VERSION'}, configured.keys())
+                self.assertNotIn('IMAGE_VERSION', configured)
+                self.assertNotIn('BMW_LOAD_ENV_FILE', configured)
+                self.assertNotIn('BMW_TOKEN_DIR', example_keys)
+                self.assertNotIn('BMW_HEARTBEAT_FILE', example_keys)
+                volume = next(volume for volume in service['volumes'] if volume['source'] == 'data-token')
+                self.assertEqual(volume['target'], '/app/token')
+                self.assertNotIn('BMW_TOKEN_DIR', configured)
+                self.assertNotIn('BMW_HEARTBEAT_FILE', configured)
+
+    def compose_service(self, compose_file='docker-compose.yml', env_file='.env.sample', **overrides):
+        env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-gcid')
+        env.pop('IMAGE_VERSION', None)
+        env.update(overrides)
+        result = subprocess.run(['docker', 'compose', '--env-file', env_file,
+                                 '-f', compose_file, 'config', '--format', 'json'],
+                                cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+        return json.loads(result.stdout)['services']['bmw-mqtt-bridge']
+
+    @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
+    def test_host_compose_uses_published_image_and_defaults_to_latest(self):
+        for overrides, expected in (({}, 'latest'), ({'IMAGE_VERSION': ''}, 'latest'),
+                                    ({'IMAGE_VERSION': '1.2.3'}, '1.2.3')):
+            with self.subTest(overrides=overrides):
+                service = self.compose_service(env_file=os.devnull, **overrides)
+                self.assertEqual(service['image'], f'ghcr.io/alaub81/bmw-mqtt-bridge:{expected}')
+                self.assertNotIn('build', service)
+
+    @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
+    def test_dev_compose_builds_locally_with_identical_runtime_configuration(self):
+        host = self.compose_service()
+        development = self.compose_service('docker-compose.dev.yml', IMAGE_VERSION='1.2.3')
+        self.assertEqual(development.pop('image'), 'bmw-mqtt-bridge:dev')
+        self.assertEqual(development.pop('build')['context'], str(ROOT))
+        self.assertEqual(development.pop('pull_policy'), 'build')
+        self.assertEqual(host.pop('image'), 'ghcr.io/alaub81/bmw-mqtt-bridge:latest')
+        self.assertEqual(host, development)
+        self.assertIn('host.docker.internal=host-gateway', host['extra_hosts'])
 
     def test_authentication_ignores_valid_credentials_in_old_env_file(self):
         script = (ROOT / 'resources/bmw_flow.sh').read_text()

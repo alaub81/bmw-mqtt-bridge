@@ -2,7 +2,7 @@
 data
 site/
 .env.*
-!.env.example
+!.env.sample
 secrets/
 **/id_token.txt
 **/refresh_token.txt
