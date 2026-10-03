@@ -1,6 +1,6 @@
 services:
   bmw-mqtt-bridge:
-    image: ghcr.io/alaub81/bmw-mqtt-bridge:${IMAGE_VERSION:-latest}
+    image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
     environment:
       HEALTH_MQTT_DISCONNECT_TIMEOUT: ${HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
       BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}

@@ -111,15 +111,15 @@ chmod 600 .env
 ```
 
 Edit `.env` and set `BMW_CLIENT_ID`, `BMW_GCID` and your
-local MQTT settings. `IMAGE_VERSION=latest` selects the newest stable release;
-use a published tag such as `IMAGE_VERSION=1.2.3` (without `v`) to select a version.
-An unset or empty `IMAGE_VERSION` also falls back to `latest`. A push to `main`
+local MQTT settings. `BMB_VERSION=latest` selects the newest stable release;
+use a published tag such as `BMB_VERSION=1.2.3` (without `v`) to select a version.
+An unset or empty `BMB_VERSION` also falls back to `latest`. A push to `main`
 runs CI; publishing a release requires a stable Git tag. See
 [CI and container releases](#ci-and-container-releases).
 
 Docker Compose passes the connection settings to the container
 as environment variables. The `.env` is not mounted or copied into the image.
-`IMAGE_VERSION` is used only by Compose to select the image tag.
+`BMB_VERSION` is used only by Compose to select the image tag.
 The bridge and authentication script never read or create a `.env` inside the
 container. Environment variables are visible to
 users with Docker access; passing values this way does not make them secrets.
@@ -160,7 +160,11 @@ The tokens live at these paths inside the container:
 /app/token/refresh_token.txt
 ```
 
-The bridge renews tokens automatically and saves them with permissions `0644`.
+The bridge renews tokens automatically and saves them with permissions `0600`
+(read/write for the owner only). Authentication uses the same permissions for
+all three token files, including `access_token.txt`. On startup, the entrypoint
+restricts existing token files to `0600` and removes the obsolete
+`token_refresh_response.json`; the bridge no longer stores that response.
 All state files live directly in `/app/token`, without an additional subdirectory.
 The entrypoint requires a complete pair at these paths. It does not automatically
 migrate older file names or subdirectories. Existing tokens are never overwritten
@@ -201,7 +205,7 @@ A plain restart does not apply changed Compose environment variables.
 
 ### Image updates and switching versions
 
-Set `IMAGE_VERSION` in `.env` to the desired published tag, then download and apply it:
+Set `BMB_VERSION` in `.env` to the desired published tag, then download and apply it:
 
 ```bash
 docker compose pull
@@ -218,7 +222,7 @@ so a version tag selects a code release rather than an immutable image digest.
 
 When switching an existing local-build installation to the GHCR image, keep
 the same project directory and Compose project name so the existing `data-token`
-volume is reused. Existing `.env` files can add `IMAGE_VERSION=latest`; without
+volume is reused. Existing `.env` files can add `BMB_VERSION=latest`; without
 that line, the default is already `latest`.
 
 ### TLS connection to your own MQTT broker
@@ -325,7 +329,7 @@ Initial authentication creates them; the bridge refreshes them itself. See
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `IMAGE_VERSION` | `latest` | GHCR image tag selected by host Compose. Use a published version without `v`, such as `1.2.3`. Empty/unset uses `latest`. Not passed to the bridge; local development uses its own image. |
+| `BMB_VERSION` | `latest` | GHCR image tag selected by host Compose. Use a published version without `v`, such as `1.2.3`. Empty/unset uses `latest`. Not passed to the bridge; local development uses its own image. |
 
 ### 🌐 BMW CarData Broker
 
@@ -593,7 +597,7 @@ docker compose -f docker-compose.dev.yml logs -f bmw-mqtt-bridge
 mount from `docker-compose.yml` through
 [Compose extends](https://docs.docker.com/compose/how-tos/multiple-compose-files/extends/).
 It builds the local `Dockerfile` as `bmw-mqtt-bridge:dev` with `pull_policy: build`,
-so development uses your working tree regardless of `IMAGE_VERSION`. Only the
+so development uses your working tree regardless of `BMB_VERSION`. Only the
 top-level volume declaration is repeated because `extends` does not inherit it.
 Always include `-f docker-compose.dev.yml` for development commands, including
 `stop`, `down`, `run` and `logs`. Plain `docker compose` selects the GHCR deployment.
@@ -715,6 +719,10 @@ option; older rebuilds do not overwrite the newest release's aliases. Critical,
 fixable Trivy findings prevent publication. No BMW credentials are needed to
 build or publish the image.
 
+Dependabot is the sole dependency update bot, configured in
+`.github/dependabot.yml`. It checks GitHub Actions and Docker dependencies weekly.
+The active workflows live exclusively in `.github/workflows/`.
+
 ## Pre-deployment tests
 
 Run both checks before building and starting a local development container:
@@ -726,7 +734,7 @@ Run both checks before building and starting a local development container:
 
 `tests/test-check.sh` runs all tests under `tests/` from any working directory. It uses
 the project-local `.lint-venv` Python when available, otherwise system Python.
-Requirements are Python 3.9+, Bash, Git, a C++17 compiler available as `c++`, and
+Requirements are Python 3.9+, Bash, Git, jq, OpenSSL, a C++17 compiler available as `c++`, and
 Docker CLI with the Compose plugin. No running Docker daemon, BMW account,
 production tokens or MQTT broker is required. Missing dependencies, skipped
 tests, an empty suite or failed tests return a non-zero exit code.
@@ -734,7 +742,8 @@ tests, an empty suite or failed tests return a non-zero exit code.
 The separate CI job **Offline regression tests** invokes exactly
 `./tests/test-check.sh`. These tests validate token handling and legacy-state rejection,
 environment-only configuration, GHCR image selection and shared development settings,
-TLS settings, MQTT status and shutdown handling, heartbeat and
+token permissions during authentication and atomic writes, TLS settings,
+MQTT status and shutdown handling, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end

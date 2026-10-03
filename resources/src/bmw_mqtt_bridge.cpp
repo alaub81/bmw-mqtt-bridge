@@ -61,7 +61,7 @@
 //
 // Notes:
 //   - id_token (a JWT) is used as the MQTT password; we parse its 'exp' to know validity.
-//   - Token files written by this program use permissions 0644.
+//   - Token files written by this program use permissions 0600.
 //
 // ------------------------------------------------------------------------
 
@@ -193,13 +193,6 @@ static bool configure_local_tls(mosquitto* client) {
         std::cerr << "[bridge] " << error.what() << '\n';
         return false;
     }
-}
-
-// Helper: dirname
-static std::string dirname_of(const std::string& p){
-    std::filesystem::path pp(p);
-    auto d = pp.parent_path();
-    return d.empty() ? std::string(".") : d.string();
 }
 
 // Internal container paths shared with Compose and the authentication helper.
@@ -945,23 +938,6 @@ int main() try {
 
 // ============= refresh tokens =============
 
-// small utility: safely writes a file (0644 default)
-static bool write_file_mode(const std::string& path, const std::string& data, mode_t mode=0644){
-    int fd = ::open(path.c_str(), O_CREAT|O_TRUNC|O_WRONLY, mode);
-    if (fd < 0) return false;
-    if (::fchmod(fd, mode) != 0) { ::close(fd); return false; }
-    ssize_t want = (ssize_t)data.size();
-    const char* p = data.data();
-    while (want > 0){
-        ssize_t n = ::write(fd, p, want);
-        if (n <= 0) { ::close(fd); return false; }
-        want -= n; p += n;
-    }
-    ::fsync(fd);
-    ::close(fd);
-    return true;
-}
-
 // form-urlencode for a key/value with libcurl (uses its own CURL easy handle)
 static std::string urlencode_component(const std::string& s){
     CURL* h = curl_easy_init();
@@ -985,8 +961,7 @@ static std::string build_form_body(const std::vector<std::pair<std::string,std::
 }
 
 static bool write_file_atomic(const std::string& final_path,
-                              const std::string& data,
-                              mode_t mode = 0644)
+                              const std::string& data)
 {
     namespace fs = std::filesystem;
 
@@ -1007,7 +982,7 @@ static bool write_file_atomic(const std::string& final_path,
     }
 
     // Set permissions independently of umask.
-    if (::fchmod(tfd, mode) != 0) {
+    if (::fchmod(tfd, 0600) != 0) {
         std::cerr << "[bridge] fchmod failed: " << std::strerror(errno) << "\n";
         ::close(tfd);
         ::unlink(buf.data());
@@ -1115,22 +1090,6 @@ static bool refresh_tokens() {
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
 
-    // determine target paths based on configured files
-    std::string id_path  = ID_TOKEN_FILE;
-    std::string rt_path  = REFRESH_TOKEN_FILE;
-    std::string dir      = dirname_of(id_path);
-    std::string at_path  = (std::filesystem::path(dir) / "access_token.txt").string();
-
-    // save entire response (debug) in same directory as token files
-    try {
-        json dbg = json::parse(resp);
-        write_file_mode((std::filesystem::path(dir) / "token_refresh_response.json").string(),
-                        dbg.dump(2) + "\n", 0644);
-    } catch (...) {
-        write_file_mode((std::filesystem::path(dir) / "token_refresh_response.json").string(),
-                        resp, 0644);
-    }
-
     if (http_code != 200) {
         std::cerr << "✖ Refresh HTTP " << http_code << ":\n" << resp << "\n";
         return false;
@@ -1163,10 +1122,11 @@ static bool refresh_tokens() {
     }
 
     // Write tokens atomically in their target directory.
+    const std::string at_path = (std::filesystem::path(ID_TOKEN_FILE).parent_path() / "access_token.txt").string();
     bool ok = true;
-    ok &= write_file_atomic(id_path, new_id, 0644);
-    ok &= write_file_atomic(rt_path, new_rt, 0644);
-    ok &= write_file_atomic(at_path, new_acc, 0644);
+    ok &= write_file_atomic(ID_TOKEN_FILE, new_id);
+    ok &= write_file_atomic(REFRESH_TOKEN_FILE, new_rt);
+    ok &= write_file_atomic(at_path, new_acc);
 
     if (!ok) {
         std::cerr << "[bridge] writing tokens atomically failed\n";

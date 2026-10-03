@@ -7,7 +7,7 @@ cd -- "$PROJECT_DIR"
 export PATH="$PROJECT_DIR/.lint-venv/bin:$PROJECT_DIR/.lint-tools/bin:$PATH"
 
 # Missing dependencies must fail rather than silently skip regression checks.
-for tool in python3 bash git c++ docker; do
+for tool in python3 bash git jq openssl c++ docker; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing test dependency: $tool" >&2
     exit 1

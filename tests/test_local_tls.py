@@ -17,7 +17,7 @@ class LocalTlsTests(unittest.TestCase):
         env_helpers = source.split('// ---------------------- tiny helpers for env config ----------------------')[1]
         env_helpers = env_helpers.split('// ===================== Configuration =====================')[0]
         tls_setup = source.split('// MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.')[1]
-        tls_setup = tls_setup.split('// Helper: dirname')[0]
+        tls_setup = tls_setup.split('static std::string token_dir() {')[0]
         path = Path(cls.temp.name) / 'tls.cpp'
         path.write_text(r'''
 #include <algorithm>

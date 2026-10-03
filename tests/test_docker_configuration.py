@@ -36,15 +36,19 @@ class DockerConfigurationTests(unittest.TestCase):
 
     def test_existing_tokens_are_used_with_consistent_permissions(self):
         self.create_tokens()
-        for filename in ('id_token.txt', 'refresh_token.txt'):
+        (self.state / 'access_token.txt').write_text('current-access')
+        (self.state / 'token_refresh_response.json').write_text('{"obsolete": "test-token"}')
+        for filename in ('id_token.txt', 'refresh_token.txt', 'access_token.txt'):
             (self.state / filename).chmod(0o644)
         result = self.run_entrypoint()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('bridge-started', result.stdout)
         self.assertEqual((self.state / 'id_token.txt').read_text(), 'current-id')
-        for filename in ('id_token.txt', 'refresh_token.txt'):
+        self.assertFalse((self.state / 'token_refresh_response.json').exists())
+        self.assertEqual((self.state / 'access_token.txt').read_text(), 'current-access')
+        for filename in ('id_token.txt', 'refresh_token.txt', 'access_token.txt'):
             self.assertEqual(stat.S_IMODE((self.state / filename).stat().st_mode),
-                             0o644)
+                             0o600)
 
     def test_restart_keeps_rotated_tokens(self):
         self.create_tokens()
@@ -138,8 +142,8 @@ class DockerConfigurationTests(unittest.TestCase):
             with self.subTest(compose_file=compose_file):
                 service = self.compose_service(compose_file, BMW_TOKEN_DIR='/some/host/path')
                 configured = service['environment']
-                self.assertEqual(example_keys - {'IMAGE_VERSION'}, configured.keys())
-                self.assertNotIn('IMAGE_VERSION', configured)
+                self.assertEqual(example_keys - {'BMB_VERSION'}, configured.keys())
+                self.assertNotIn('BMB_VERSION', configured)
                 self.assertNotIn('BMW_LOAD_ENV_FILE', configured)
                 self.assertNotIn('BMW_TOKEN_DIR', example_keys)
                 self.assertNotIn('BMW_HEARTBEAT_FILE', example_keys)
@@ -150,7 +154,7 @@ class DockerConfigurationTests(unittest.TestCase):
 
     def compose_service(self, compose_file='docker-compose.yml', env_file='.env.sample', **overrides):
         env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-gcid')
-        env.pop('IMAGE_VERSION', None)
+        env.pop('BMB_VERSION', None)
         env.update(overrides)
         result = subprocess.run(['docker', 'compose', '--env-file', env_file,
                                  '-f', compose_file, 'config', '--format', 'json'],
@@ -159,8 +163,8 @@ class DockerConfigurationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
     def test_host_compose_uses_published_image_and_defaults_to_latest(self):
-        for overrides, expected in (({}, 'latest'), ({'IMAGE_VERSION': ''}, 'latest'),
-                                    ({'IMAGE_VERSION': '1.2.3'}, '1.2.3')):
+        for overrides, expected in (({}, 'latest'), ({'BMB_VERSION': ''}, 'latest'),
+                                    ({'BMB_VERSION': '1.2.3'}, '1.2.3')):
             with self.subTest(overrides=overrides):
                 service = self.compose_service(env_file=os.devnull, **overrides)
                 self.assertEqual(service['image'], f'ghcr.io/alaub81/bmw-mqtt-bridge:{expected}')
@@ -169,7 +173,7 @@ class DockerConfigurationTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
     def test_dev_compose_builds_locally_with_identical_runtime_configuration(self):
         host = self.compose_service()
-        development = self.compose_service('docker-compose.dev.yml', IMAGE_VERSION='1.2.3')
+        development = self.compose_service('docker-compose.dev.yml', BMB_VERSION='1.2.3')
         self.assertEqual(development.pop('image'), 'bmw-mqtt-bridge:dev')
         self.assertEqual(development.pop('build')['context'], str(ROOT))
         self.assertEqual(development.pop('pull_policy'), 'build')

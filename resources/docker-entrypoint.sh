@@ -8,6 +8,15 @@ RT_FILE="${STATE_DIR}/refresh_token.txt"
 
 echo "[entrypoint] Expecting tokens in: BMW_TOKEN_DIR=${STATE_DIR}"
 
+# Restrict existing tokens too, including before running the authentication helper.
+for token_file in "$ID_FILE" "$RT_FILE" "$STATE_DIR/access_token.txt"; do
+  if [[ -f "$token_file" ]]; then
+    chmod 0600 "$token_file"
+  fi
+done
+# Remove the obsolete debug response, which can contain a complete token pair.
+rm -f "$STATE_DIR/token_refresh_response.json"
+
 # Run custom commands such as the authentication helper directly.
 if [[ $# -gt 0 && "$1" != "/app/bmw_mqtt_bridge" ]]; then
   exec "$@"
@@ -20,9 +29,6 @@ if [[ ! -s "$ID_FILE" || ! -s "$RT_FILE" ]]; then
   echo "  docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh"
   exit 1
 fi
-
-# Keep token permissions consistent with the authentication and refresh writers.
-chmod 0644 "$ID_FILE" "$RT_FILE"
 
 # Start the bridge as the main container process.
 exec /app/bmw_mqtt_bridge

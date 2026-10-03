@@ -43,7 +43,7 @@
 #   - Read BMW_CLIENT_ID and BMW_GCID exclusively from the container environment.
 #   - Save tokens in BMW_TOKEN_DIR (default: /app/token).
 #
-# Outputs (permissions 0644):
+# Outputs (permissions 0600):
 #   access_token.txt
 #   id_token.txt
 #   refresh_token.txt
@@ -55,7 +55,7 @@
 #   - id_token is a JWT that contains the 'exp' claim used by the bridge.
 #
 # Security:
-#   - Files are written with safe permissions (rw-r--r--).
+#   - Files are readable and writable only by their owner (rw-------).
 #   - Do NOT commit real tokens/IDs to Git repositories.
 # -----------------------------------------------------------------------------
 
@@ -87,9 +87,6 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "✖ Missing dependency: $1" 
 need curl
 need jq
 need openssl
-
-# We want token files to be world-readable enough for common service setups (owner RW, group/other R).
-umask 022
 
 # ---------- PKCE (per run) ----------
 CODE_VERIFIER="$(openssl rand -base64 96 | tr -d '=+/ ' | cut -c1-96)"
@@ -151,11 +148,15 @@ while (( LEFT > 0 )); do
     echo "✔ Tokens received:"
     echo "$TOK" | jq '{access_token: .access_token|type, id_token: (.id_token|type), refresh_token: (.refresh_token|type), expires_in}'
 
-    # Write tokens into fixed OUT_DIR (permissions end up 0644 due to umask 022)
+    # Restrict existing files before truncating; umask protects newly created files.
+    for token_file in "$OUT_DIR"/{access_token.txt,id_token.txt,refresh_token.txt}; do
+      if [[ -f "$token_file" ]]; then
+        chmod 0600 "$token_file"
+      fi
+    done
     jq -r '.access_token'  <<<"$TOK" > "$OUT_DIR/access_token.txt"
     jq -r '.id_token'      <<<"$TOK" > "$OUT_DIR/id_token.txt"
     jq -r '.refresh_token' <<<"$TOK" > "$OUT_DIR/refresh_token.txt"
-    chmod 0644 "$OUT_DIR"/{access_token.txt,id_token.txt,refresh_token.txt} || true
 
     echo "Saved tokens in: $OUT_DIR"
     echo "→ MQTT password = contents of $OUT_DIR/id_token.txt"
