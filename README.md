@@ -665,6 +665,15 @@ See the [openHAB Homie documentation](https://www.openhab.org/addons/bindings/ho
 Adding fields to an already adopted Thing should be verified with your installed
 openHAB version; the bridge republishes the entire updated description.
 
+If Homie topics do not appear, check the `[homie]` logs: new property registration,
+the additional client's CONNACK result, and a description publication summary are
+logged separately. `[homie/log]` includes MQTT library warnings/errors. A queued
+connect or publish is not confirmation of broker acceptance. Homie uses `homie/`,
+independently of `BMB_MQTT_LOCAL_PREFIX`; broker ACLs must permit the vehicle's
+`homie/bmw-<VIN>/...` topics, including its Last Will. A populated cache with no
+Homie topics indicates that field processing succeeded; inspect the additional
+connection and broker permissions next.
+
 Setting `BMB_MQTT_HOMIE=0` stops Homie publishing but does not delete retained Homie
 topics or the local cache. To remove a device permanently, clear its retained
 `homie/bmw-<VIN>/...` messages in your MQTT client and remove the corresponding

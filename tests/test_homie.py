@@ -44,7 +44,9 @@ static bool connect_now = true;
 static std::string BMB_MQTT_LOCAL_HOST = "broker.test", BMB_MQTT_LOCAL_USER = "user", BMB_MQTT_LOCAL_PASSWORD = "secret";
 static int BMB_MQTT_LOCAL_PORT = 8883;
 constexpr int MOSQ_ERR_SUCCESS = 0;
+constexpr int MOSQ_LOG_ERR = 1, MOSQ_LOG_WARNING = 2;
 const char* mosquitto_strerror(int) { return "injected failure"; }
+const char* mosquitto_connack_string(int rc) { return rc == 0 ? "Connection Accepted" : "Connection Refused"; }
 mosquitto* mosquitto_new(const char* id, bool clean, void* context) {
     assert(id == nullptr && clean);
     auto* client = new mosquitto{context};
@@ -54,6 +56,7 @@ mosquitto* mosquitto_new(const char* id, bool clean, void* context) {
 void mosquitto_connect_callback_set(mosquitto* c, decltype(c->connect_cb) cb) { c->connect_cb = cb; }
 void mosquitto_disconnect_callback_set(mosquitto* c, decltype(c->disconnect_cb) cb) { c->disconnect_cb = cb; }
 void mosquitto_publish_callback_set(mosquitto* c, decltype(c->publish_cb) cb) { c->publish_cb = cb; }
+void mosquitto_log_callback_set(mosquitto*, void (*)(mosquitto*, void*, int, const char*)) {}
 int mosquitto_reconnect_delay_set(mosquitto*, int a, int b, bool backoff) {
     assert(a == 1 && b == 10 && backoff); return 0;
 }
@@ -156,6 +159,19 @@ int main(int argc, char** argv) {
         publisher.ingest("WBA00000000000001", field);
         publisher.tick(true);
         assert(clients.size() == 2 && wills.size() == 2 && wills[0].first != wills[1].first);
+    } else if (scenario == "async") {
+        connect_now = false;
+        publisher.ingest(vin, field);
+        publisher.tick(true);
+        assert(clients.size() == 1 && messages.empty());
+        assert(std::filesystem::exists(cache));
+        clients[0]->connect_cb(clients[0], clients[0]->context, 5);
+        publisher.tick(true);
+        assert(messages.empty());
+        clients[0]->connect_cb(clients[0], clients[0]->context, 0);
+        publisher.tick(true);
+        assert(latest(base + "$state") == "ready");
+        assert(latest(base + "telemetry/" + id(key)) == "0");
     } else if (scenario == "retry") {
         failure = 4;
         publisher.ingest(vin, field);
@@ -190,6 +206,7 @@ int main(int argc, char** argv) {
         result = subprocess.run([str(self.binary), name, str(cache)],
                                 text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
+        return result
 
     def test_dynamic_schema_values_reconnect_and_restart(self):
         cache = self.base / 'restore.json'
@@ -201,6 +218,12 @@ int main(int argc, char** argv) {
 
     def test_failed_publications_retry_full_description(self):
         self.run_scenario('retry', self.base / 'retry.json')
+
+    def test_async_connection_refusal_is_logged_and_recovery_publishes(self):
+        result = self.run_scenario('async', self.base / 'async.json')
+        self.assertIn('CONNACK rc=5 (Connection Refused)', result.stderr)
+        self.assertIn('CONNACK rc=0 (Connection Accepted)', result.stderr)
+        self.assertIn('queued under homie/bmw-wby8p610007l21042/', result.stderr)
 
     def test_corrupt_cache_does_not_stop_live_publishing(self):
         cache = self.base / 'corrupt.json'

@@ -61,11 +61,22 @@ class HomiePublisher {
     }
     static void on_connect(mosquitto*, void* context, int rc) {
         auto& d = *static_cast<Device*>(context);
+        std::cerr << "[homie] " << d.id << " CONNACK rc=" << rc
+                  << " (" << mosquitto_connack_string(rc) << ")\n";
         d.connected = rc == 0;
         if (rc == 0) d.resend = true;
     }
-    static void on_disconnect(mosquitto*, void* context, int) {
-        static_cast<Device*>(context)->connected = false;
+    static void on_disconnect(mosquitto*, void* context, int rc) {
+        auto& d = *static_cast<Device*>(context);
+        d.connected = false;
+        std::cerr << "[homie] " << d.id << " disconnected rc=" << rc
+                  << " (" << mosquitto_strerror(rc) << ")\n";
+    }
+    static void on_log(mosquitto*, void* context, int level, const char* message) {
+        if (!(level & (MOSQ_LOG_ERR | MOSQ_LOG_WARNING))) return;
+        const auto& d = *static_cast<Device*>(context);
+        std::cerr << "[homie/log] " << d.id << " level=" << level << " "
+                  << (message ? message : "") << '\n';
     }
     static void on_publish(mosquitto*, void* context, int mid) {
         auto& d = *static_cast<Device*>(context);
@@ -80,7 +91,8 @@ class HomiePublisher {
         const int rc = mosquitto_publish(d.client, nullptr, topic.c_str(),
                                          static_cast<int>(value.size()), value.data(), 1, true);
         if (rc != MOSQ_ERR_SUCCESS) {
-            std::cerr << "[homie] publish failed: " << mosquitto_strerror(rc) << '\n';
+            std::cerr << "[homie] publish failed topic='" << topic
+                      << "': " << mosquitto_strerror(rc) << '\n';
             return false;
         }
         return true;
@@ -98,10 +110,14 @@ class HomiePublisher {
         d.last_online = std::chrono::steady_clock::now();
         // A generated client ID prevents collisions with the regular local client.
         d.client = mosquitto_new(nullptr, true, &d);
-        if (!d.client) return false;
+        if (!d.client) {
+            std::cerr << "[homie] " << d.id << " client allocation failed\n";
+            return false;
+        }
         mosquitto_connect_callback_set(d.client, on_connect);
         mosquitto_disconnect_callback_set(d.client, on_disconnect);
         mosquitto_publish_callback_set(d.client, on_publish);
+        mosquitto_log_callback_set(d.client, on_log);
         mosquitto_reconnect_delay_set(d.client, 1, 10, true);
         const std::string state_topic = "homie/" + d.id + "/$state";
         int rc = mosquitto_will_set(d.client, state_topic.c_str(), 4, "lost", 1, true);
@@ -110,11 +126,15 @@ class HomiePublisher {
                                            BMB_MQTT_LOCAL_PASSWORD.c_str());
         }
         if (rc != MOSQ_ERR_SUCCESS || !configure_local_tls(d.client)) {
+            std::cerr << "[homie] " << d.id << " client configuration failed rc=" << rc << '\n';
             stop_client(d);
             return false;
         }
         rc = mosquitto_connect_async(d.client, BMB_MQTT_LOCAL_HOST.c_str(), BMB_MQTT_LOCAL_PORT, 30);
         if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(d.client);
+        std::cerr << "[homie] " << d.id << " connect queued host='" << BMB_MQTT_LOCAL_HOST
+                  << "' port=" << BMB_MQTT_LOCAL_PORT << " rc=" << rc
+                  << " (" << mosquitto_strerror(rc) << ")\n";
         if (rc != MOSQ_ERR_SUCCESS) {
             std::cerr << "[homie] connection failed: " << mosquitto_strerror(rc) << '\n';
             stop_client(d);
@@ -170,6 +190,7 @@ class HomiePublisher {
                 if (!entry->properties.empty()) restored.emplace(vin, std::move(entry));
             }
             devices = std::move(restored);
+            std::cerr << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
             std::cerr << "[homie] cannot load field cache: " << e.what() << '\n';
         }
@@ -215,6 +236,9 @@ public:
                 auto& d = device(vin);
                 const auto id = property_id(name);
                 const auto previous = d.properties.find(id);
+                if (previous == d.properties.end()) {
+                    std::cerr << "[homie] " << d.id << " new property '" << name << "'\n";
+                }
                 // Never narrow numeric properties based on an initial integer 0.
                 const bool schema_changed = previous == d.properties.end() ||
                     previous->second.datatype != p.datatype || previous->second.unit != p.unit;
@@ -232,6 +256,8 @@ public:
             if (d.connected) d.last_online = now;
             if ((!d.client && d.last_online == std::chrono::steady_clock::time_point{}) ||
                 (!d.connected && now - d.last_online >= std::chrono::seconds(30))) {
+                if (d.last_online != std::chrono::steady_clock::time_point{})
+                    std::cerr << "[homie] " << d.id << " offline for 30s; rebuilding client\n";
                 stop_client(d);
                 start_client(d);
             }
@@ -239,7 +265,8 @@ public:
             const bool resend = d.resend.exchange(false);
             if (d.dirty || resend || d.values_dirty) {
                 // Full replay also recovers from a broker losing its retained store.
-                bool ok = !(d.dirty || resend) || describe(d);
+                const bool schema_update = d.dirty || resend;
+                bool ok = !schema_update || describe(d);
                 if (ok) {
                     for (const auto& [id, p] : d.properties)
                         ok &= publish(d, "telemetry/" + id, p.value);
@@ -249,6 +276,10 @@ public:
                 if (ok) d.state = state;
                 d.dirty = !ok;
                 d.values_dirty = !ok;
+                if (ok && schema_update) {
+                    std::cerr << "[homie] description and " << d.properties.size()
+                              << " value(s) queued under homie/" << d.id << "/\n";
+                }
             } else {
                 // Availability is separate from cached telemetry, which may be old.
                 const std::string state = bmw_connected ? "ready" : "alert";
