@@ -2,7 +2,7 @@
 services:
   bmw-mqtt-bridge:
     extends:
-      file: docker-compose.yml
+      file: docker-compose.example.yml
       service: bmw-mqtt-bridge
     build: .
     image: bmw-mqtt-bridge:dev

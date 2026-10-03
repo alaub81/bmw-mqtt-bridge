@@ -138,7 +138,7 @@ class DockerConfigurationTests(unittest.TestCase):
         example_keys = {line.split('=', 1)[0] for line in
                         (ROOT / '.env.sample').read_text().splitlines()
                         if line and not line.startswith('#')}
-        for compose_file in ('docker-compose.yml', 'docker-compose.dev.yml'):
+        for compose_file in ('docker-compose.example.yml', 'docker-compose.dev.yml'):
             with self.subTest(compose_file=compose_file):
                 service = self.compose_service(compose_file, BMW_TOKEN_DIR='/some/host/path')
                 configured = service['environment']
@@ -152,7 +152,7 @@ class DockerConfigurationTests(unittest.TestCase):
                 self.assertNotIn('BMW_TOKEN_DIR', configured)
                 self.assertNotIn('BMW_HEARTBEAT_FILE', configured)
 
-    def compose_service(self, compose_file='docker-compose.yml', env_file='.env.sample', **overrides):
+    def compose_service(self, compose_file='docker-compose.example.yml', env_file='.env.sample', **overrides):
         env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-gcid')
         env.pop('BMB_VERSION', None)
         env.update(overrides)

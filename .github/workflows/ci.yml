@@ -101,7 +101,7 @@ jobs:
           BMW_CLIENT_ID: ci-client
           BMW_GCID: ci-account
         run: |
-          docker compose --env-file .env.sample config --quiet
+          docker compose --env-file .env.sample -f docker-compose.example.yml config --quiet
           docker compose --env-file .env.sample -f docker-compose.dev.yml config --quiet
 
   build_and_scan:

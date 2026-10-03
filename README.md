@@ -15,6 +15,7 @@ installation, configuration, operation and development documentation.
 - [Features and requirements](#features-and-requirements)
 - [Project structure](#project-structure)
 - [Get your BMW IDs](#get-your-bmw-ids)
+- [Quick start](#quick-start)
 - [Docker installation](#docker-installation)
 - [Environment variables](#environment-variables)
 - [MQTT topics](#mqtt-topics)
@@ -65,7 +66,7 @@ bmw-mqtt-bridge/
 │   └── test_*.py
 ├── .github/workflows/
 ├── .env.sample
-├── docker-compose.yml
+├── docker-compose.example.yml
 ├── docker-compose.dev.yml
 ├── Dockerfile
 ├── Dockerfile-Debian
@@ -94,18 +95,75 @@ After this setup, your bridge will be able to authenticate against the official 
 
 At **CARDATA STREAM** don't forget to click `Change data selection` and activate the topics you want to receive.
 
+## Quick start
+
+Install Docker with the Compose plugin and obtain your
+[BMW IDs](#get-your-bmw-ids). Create a directory with these two files.
+
+Minimal `docker-compose.yml`:
+
+```yaml
+services:
+  bmw-mqtt-bridge:
+    image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
+    env_file: .env
+    volumes:
+      - data-token:/app/token
+    restart: unless-stopped
+
+volumes:
+  data-token:
+```
+
+Minimal `.env`:
+
+```dotenv
+BMW_CLIENT_ID=your-client-id
+BMW_GCID=your-account-id
+MQTT_LOCAL_HOST=192.168.1.10
+```
+
+Replace the IDs and broker address. This example uses an MQTT broker reachable
+at that address on port 1883 without authentication or TLS. Add optional settings
+to `.env` as needed; `env_file` passes them to the container. For example, a broker
+requiring authentication needs `MQTT_LOCAL_USER` and `MQTT_LOCAL_PASSWORD`.
+The application uses defaults for all other settings.
+
+Authenticate once, then start the bridge:
+
+```bash
+chmod 600 .env
+docker compose pull
+docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh
+docker compose up -d
+docker compose logs -f bmw-mqtt-bridge
+```
+
+Follow the BMW login instructions shown by the authentication helper. Tokens
+persist in the volume; subsequent starts do not require authentication while
+they remain valid. Connection status is published to `bmw/status`.
+
+This minimal configuration omits the Docker healthcheck. For the full configuration
+including health monitoring, copy `docker-compose.example.yml` to
+`docker-compose.yml` and `.env.sample` to `.env` as described below. Your local
+configuration files are ignored by Git. The full template explicitly forwards
+its listed settings; additional overrides such as `BMW_TOKEN_DIR` must be added
+to the service's `environment` section. See [Environment variables](#environment-variables).
+
 ## Docker installation
 
 ### Configuration
 
 The host only needs `docker-compose.yml` and a configured `.env`; no source code,
-compiler or local image build is required. Download the Compose file and sample:
+compiler or local image build is required. Download the templates and copy them
+to your local configuration files:
 
 ```bash
 mkdir -p bmw-mqtt-bridge
 cd bmw-mqtt-bridge
-curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/alaub81/bmw-mqtt-bridge/main/docker-compose.yml
+curl -fsSLo docker-compose.example.yml https://raw.githubusercontent.com/alaub81/bmw-mqtt-bridge/main/docker-compose.example.yml
 curl -fsSLo .env.sample https://raw.githubusercontent.com/alaub81/bmw-mqtt-bridge/main/.env.sample
+cp docker-compose.example.yml docker-compose.yml
 cp .env.sample .env
 chmod 600 .env
 ```
@@ -285,7 +343,8 @@ This setting is independent of the BMW OAuth `BMW_CLIENT_ID` and `MQTT_LOCAL_PRE
 
 ### Compose healthcheck
 
-The healthcheck is defined in `docker-compose.yml` and inherited by
+The healthcheck is defined in `docker-compose.example.yml`, copied to your
+local `docker-compose.yml`, and inherited by
 `docker-compose.dev.yml`. Every 30 seconds it checks
 that PID 1 is executing `/app/bmw_mqtt_bridge` and that the heartbeat in
 `/tmp/bmw-mqtt-bridge-heartbeat` belongs to PID 1 and is no more than 90 seconds
@@ -601,6 +660,7 @@ Clone the repository and configure your local `.env`:
 ```bash
 git clone https://github.com/alaub81/bmw-mqtt-bridge.git
 cd bmw-mqtt-bridge
+cp docker-compose.example.yml docker-compose.yml
 cp .env.sample .env
 chmod 600 .env
 ```
@@ -616,13 +676,13 @@ docker compose -f docker-compose.dev.yml logs -f bmw-mqtt-bridge
 ```
 
 `docker-compose.dev.yml` inherits the runtime settings, healthcheck and token
-mount from `docker-compose.yml` through
+mount from `docker-compose.example.yml` through
 [Compose extends](https://docs.docker.com/compose/how-tos/multiple-compose-files/extends/).
 It builds the local `Dockerfile` as `bmw-mqtt-bridge:dev` with `pull_policy: build`,
 so development uses your working tree regardless of `BMB_VERSION`. Only the
 top-level volume declaration is repeated because `extends` does not inherit it.
 Always include `-f docker-compose.dev.yml` for development commands, including
-`stop`, `down`, `run` and `logs`. Plain `docker compose` selects the GHCR deployment.
+`stop`, `down`, `run` and `logs`. Plain `docker compose` uses your copied `docker-compose.yml` for the GHCR deployment.
 
 Both configurations share the same project volume when run from the same
 directory. Skip authentication when valid tokens are already present, and run
