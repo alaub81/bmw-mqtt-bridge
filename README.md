@@ -190,19 +190,16 @@ see [GitHub's container registry authentication documentation](https://docs.gith
 
 ### Connecting to the Docker host
 
-The default `BMB_MQTT_LOCAL_HOST=host.docker.internal` addresses a broker reachable
-through the Docker host. The supplied Compose configuration includes
-`extra_hosts: ["host.docker.internal:host-gateway"]` for Docker Engine on Linux.
-Docker Desktop also supports access to host services. See the
-[Docker host-gateway documentation](https://docs.docker.com/reference/cli/dockerd/#configure-host-gateway-ip)
-and [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host).
+Set `BMB_MQTT_LOCAL_HOST` to an IP address or DNS name reachable from the
+container. For a broker on the same Docker network, use its service name
+(for example `BMB_MQTT_LOCAL_HOST=mosquitto`). Docker Desktop also provides
+`host.docker.internal` for access to host services; on Docker Engine on Linux,
+configure a reachable broker address explicitly.
 
-If your broker has its own IP or DNS name, or runs as a service on the same
-Docker network (for example `BMB_MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
-entry is unnecessary and can be removed. The broker must listen on an interface
-reachable from the container; a broker bound only to `127.0.0.1` on a Linux host
-is not reachable through the bridge network. No port publishing is needed for
-the bridge because it makes outbound connections to both brokers.
+The broker must listen on an interface reachable from the container. A broker
+bound only to `127.0.0.1` on a Linux host is not reachable through the bridge
+network. No port publishing is needed for the bridge because it makes outbound
+connections to both brokers.
 
 ### Persistent tokens: Docker volume
 

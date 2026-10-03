@@ -180,7 +180,7 @@ class DockerConfigurationTests(unittest.TestCase):
         self.assertEqual(development.pop('pull_policy'), 'build')
         self.assertEqual(host.pop('image'), 'ghcr.io/alaub81/bmw-mqtt-bridge:latest')
         self.assertEqual(host, development)
-        self.assertIn('host.docker.internal=host-gateway', host['extra_hosts'])
+        self.assertNotIn('extra_hosts', host)
 
     def test_authentication_ignores_valid_credentials_in_old_env_file(self):
         script = (ROOT / 'resources/bmw_flow.sh').read_text()

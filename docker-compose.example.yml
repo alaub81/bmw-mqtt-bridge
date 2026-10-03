@@ -19,8 +19,6 @@ services:
       BMB_MQTT_LOCAL_TLS_CA_FILE: ${BMB_MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
       BMB_MQTT_SPLIT_TOPICS: ${BMB_MQTT_SPLIT_TOPICS:-0}
       BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - data-token:/app/token
     healthcheck:
@@ -45,4 +43,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  data-token:
+  data_token:
