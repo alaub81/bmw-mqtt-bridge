@@ -30,7 +30,13 @@ jobs:
           .lint-venv/bin/python tests/install_lint_tools.py
           echo "$GITHUB_WORKSPACE/.lint-venv/bin" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/.lint-tools/bin" >> "$GITHUB_PATH"
-      - name: Hadolint
+      - name: Hadolint Debian
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: Dockerfile-Debian
+          config: .hadolint.yaml
+          failure-threshold: warning
+      - name: Hadolint Alpine
         uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: Dockerfile

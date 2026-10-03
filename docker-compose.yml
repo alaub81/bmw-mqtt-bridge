@@ -21,8 +21,6 @@ services:
       MQTT_RETAIN: ${MQTT_RETAIN:-0}
     volumes:
       - data-token:/app/token
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     healthcheck:
       # Check process liveness and prolonged outages of either MQTT connection.
       test:

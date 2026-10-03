@@ -1,4 +1,5 @@
 failure-threshold: warning
 ignored:
-  # Debian security updates intentionally follow the selected distribution.
+  # Debian and Alpine security updates follow the selected distribution.
   - DL3008
+  - DL3018

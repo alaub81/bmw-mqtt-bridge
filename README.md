@@ -34,10 +34,11 @@ installation, configuration, operation and development documentation.
 - Docker Compose with persistent tokens and a main-loop heartbeat healthcheck.
 - Lightweight runtime using libmosquitto, libcurl and the bundled nlohmann/json header.
 
-The application runs in Docker. The builder stage compiles the C++17 executable
+The application runs in Docker using Alpine 3.24. The builder stage compiles the C++17 executable
 and installs development libraries; the runtime stage contains the bridge and
 OAuth tools. Use Docker with the Compose plugin (Docker 24+ is the documented
-baseline).
+baseline). The `Dockerfile` builds the Alpine image used by Compose, CI and
+releases. `Dockerfile-Debian` is retained as an alternative build definition.
 
 ## Project structure
 
@@ -62,6 +63,7 @@ bmw-mqtt-bridge/
 ├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile
+├── Dockerfile-Debian
 ├── LICENSE
 └── README.md
 ```
@@ -117,8 +119,8 @@ and [Docker Desktop networking](https://docs.docker.com/desktop/features/network
 
 If your broker has its own IP or DNS name, or runs as a service on the same
 Docker network (for example `MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
-entry is unnecessary and can be removed. The supplied Compose file keeps it
-so its default host setting also works on Linux.
+entry is unnecessary. If you use `host.docker.internal` on Docker Engine on
+Linux, add the mapping to the service under `extra_hosts`.
 
 ### Persistent tokens: Docker volume
 
@@ -580,7 +582,7 @@ common text checks; new programming languages should get a dedicated linter.
 
 Rule settings live in `.hadolint.yaml`, `.yamllint.yaml`, `.pymarkdown.yaml`
 and `ruff.toml`.
-Hadolint permits unpinned Debian package versions so security updates can follow
+Hadolint permits unpinned Debian and Alpine package versions so security updates can follow
 the selected distribution; other warnings fail the check. Markdown permits long
 lines, embedded HTML, bold labels and flexible table alignment to retain the
 existing documentation style. PyMarkdown runs in the existing Python environment

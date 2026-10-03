@@ -1,56 +1,43 @@
-# -----------------------------------------------------------------------------
-# Build stage
-FROM debian:trixie-slim AS builder
+# Build and runtime use the same musl-based distribution.
+FROM alpine:3.24 AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
+    bash \
     g++ \
     make \
-    libmosquitto-dev \
-    libcurl4-openssl-dev \
-    pkg-config \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    mosquitto-dev \
+    curl-dev \
+    pkgconf
 
 WORKDIR /build
 COPY ./resources/src ./src
 COPY --chmod=0755 ./resources/compile.sh ./scripts/compile.sh
 RUN bash ./scripts/compile.sh
 
-# -----------------------------------------------------------------------------
-# Runtime stage
-FROM debian:trixie-slim
+FROM alpine:3.24
 
-# Install runtime libraries and tools for the authentication helper
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmosquitto1 \
-    libcurl4 \
+# Runtime libraries and tools used by the OAuth device flow.
+RUN apk add --no-cache \
+    bash \
+    libstdc++ \
+    mosquitto-libs \
+    libcurl \
     ca-certificates \
     curl \
     jq \
-    openssl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    openssl
 
 WORKDIR /app
-
-# Copy compiled binary
 COPY --chmod=0755 --from=builder /build/src/bmw_mqtt_bridge /app/bmw_mqtt_bridge
-
-# Copy scripts
 COPY --chmod=0755 ./resources/bmw_flow.sh .
 COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
-
-# Default environment
 ENV BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMW_PORT=9000 \
     MQTT_LOCAL_HOST=host.docker.internal \
     MQTT_LOCAL_PORT=1883 \
     MQTT_LOCAL_PREFIX=bmw/
 
-# Persist token state
 VOLUME ["/app/token"]
-
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/bmw_mqtt_bridge"]
