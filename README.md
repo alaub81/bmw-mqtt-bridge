@@ -630,11 +630,27 @@ Homie works with either setting of `BMB_MQTT_SPLIT_TOPICS` and uses Homie **4.0.
 which openHAB supports, rather than Homie 5.
 
 Each VIN becomes a device at `homie/bmw-<lowercase-VIN>`, with a `telemetry` node.
-Each received field under `data` becomes a read-only property: its `$name` is the
-original BMW field name, `$unit` comes from the message, and its value topic contains
-the scalar value rather than the RAW JSON envelope. Property IDs use `p-` followed
-by the hexadecimal UTF-8 bytes of the original field name. This keeps IDs stable
-and avoids collisions between dots, hyphens and upper/lowercase names.
+Each received field under `data` becomes a read-only property. `$unit` comes from
+the message, and the value topic contains the scalar value rather than the RAW
+JSON envelope. The node is displayed as **Vehicle data**. Property IDs remove the
+leading `vehicle.`, split CamelCase words and replace punctuation with hyphens:
+`vehicle.body.hood.isOpen` becomes `body-hood-is-open`. If two original fields
+produce the same ID, the later field receives a stable hash suffix. Assigned IDs
+are stored in the cache so additions and restarts do not rename existing channels.
+
+Known fields have concise English labels, such as **Hood open**, **Fuel level** and
+**Tire pressure — front left**. Unknown fields receive a readable label from their
+complete field path, so new BMW fields do not require a mapping entry. The label
+mapping is maintained in `resources/src/homie_names.hpp`; the cache retains the
+original BMW field name as its key.
+
+Earlier caches with hexadecimal property IDs are migrated automatically to cache
+version 2, preserving their values. The updated description lists the readable IDs
+and clears the old retained property values and metadata. Cleanup records persist
+in the cache and are replayed on reconnect to recover from interrupted migration.
+This changes channel IDs: existing openHAB Item links must be reassigned. If an
+already adopted Thing still shows old channels, remove and rediscover that Thing
+in MainUI after the bridge has published its updated description.
 
 JSON numbers use Homie's `float` datatype, including an initial integer `0`, so a
 later fractional reading works without changing the channel type. Booleans use

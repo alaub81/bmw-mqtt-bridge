@@ -2,6 +2,8 @@
 
 #include <map>
 #include <memory>
+#include <set>
+#include "homie_names.hpp"
 
 // Homie 4 needs one MQTT connection (and therefore one Last Will) per device.
 // Ingest runs on the BMW callback thread; all registry and client management runs
@@ -13,6 +15,8 @@ class HomiePublisher {
     struct Device {
         std::string id;
         std::map<std::string, Property> properties;
+        // Keep migration tombstones to retry retained cleanup on every reconnect.
+        std::set<std::string> legacy_ids;
         mosquitto* client = nullptr;
         std::atomic<bool> connected{false}, resend{false};
         bool dirty = true;
@@ -30,7 +34,7 @@ class HomiePublisher {
     std::string cache_path;
     bool cache_dirty = false;
 
-    static std::string property_id(const std::string& key) {
+    static std::string legacy_property_id(const std::string& key) {
         // Reversible encoding avoids collisions, including case and punctuation.
         static constexpr char hex[] = "0123456789abcdef";
         std::string result = "p-";
@@ -39,6 +43,21 @@ class HomiePublisher {
             result += hex[c & 15];
         }
         return result;
+    }
+    static std::string property_id(const Device& d, const std::string& key) {
+        for (const auto& [id, p] : d.properties) if (p.name == key) return id;
+        const std::string base = homie_names::field_id(key);
+        if (d.properties.count(base) == 0) return base;
+        std::string id = base + "-" + homie_names::suffix(key);
+        // Even an unlikely hash collision must not overwrite another property.
+        while (d.properties.count(id) != 0) id += "-x";
+        return id;
+    }
+    static bool valid_property_id(const std::string& id) {
+        return !id.empty() && id.front() != '-' && id.back() != '-' &&
+            std::all_of(id.begin(), id.end(), [](unsigned char c) {
+                return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+            });
     }
     static bool valid_vin(const std::string& vin) {
         return vin.size() == 17 && std::all_of(vin.begin(), vin.end(), [](unsigned char c) {
@@ -149,14 +168,14 @@ class HomiePublisher {
         ok &= publish(d, "$name", "BMW " + d.id.substr(4));
         ok &= publish(d, "$extensions", "");
         ok &= publish(d, "$nodes", "telemetry");
-        ok &= publish(d, "telemetry/$name", "Vehicle telemetry");
+        ok &= publish(d, "telemetry/$name", "Vehicle data");
         ok &= publish(d, "telemetry/$type", "bmw-cardata");
         std::string ids;
         for (const auto& [id, p] : d.properties) {
             if (!ids.empty()) ids += ',';
             ids += id;
             const std::string base = "telemetry/" + id;
-            ok &= publish(d, base + "/$name", p.name);
+            ok &= publish(d, base + "/$name", homie_names::label(p.name));
             ok &= publish(d, base + "/$datatype", p.datatype);
             ok &= publish(d, base + "/$settable", "false");
             ok &= publish(d, base + "/$retained", "true");
@@ -164,6 +183,14 @@ class HomiePublisher {
             ok &= publish(d, base + "/$unit", p.unit);
         }
         ok &= publish(d, "telemetry/$properties", ids);
+        if (ok) {
+            for (const auto& id : d.legacy_ids) {
+                if (d.properties.count(id) != 0) continue;
+                const std::string base = "telemetry/" + id;
+                for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
+                    ok &= publish(d, base + suffix, "");
+            }
+        }
         return ok;
     }
     void load() {
@@ -172,7 +199,8 @@ class HomiePublisher {
             std::ifstream input(cache_path);
             json cache;
             input >> cache;
-            if (cache.at("version") != 1 || !cache.at("vehicles").is_object())
+            const int version = cache.at("version").get<int>();
+            if ((version != 1 && version != 2) || !cache.at("vehicles").is_object())
                 throw std::runtime_error("unsupported cache format");
             // Validate the entire file before installing any cached devices.
             std::map<std::string, std::unique_ptr<Device>> restored;
@@ -185,11 +213,22 @@ class HomiePublisher {
                                field.at("unit").get<std::string>(), field.at("value").get<std::string>()};
                     if (name.empty() || (p.datatype != "float" && p.datatype != "boolean" && p.datatype != "string"))
                         throw std::runtime_error("invalid cached property");
-                    entry->properties.emplace(property_id(name), std::move(p));
+                    const std::string id = version == 1 ? property_id(*entry, name) : field.at("id").get<std::string>();
+                    if (!valid_property_id(id) || !entry->properties.emplace(id, std::move(p)).second)
+                        throw std::runtime_error("invalid or duplicate cached property ID");
+                    if (version == 1) entry->legacy_ids.insert(legacy_property_id(name));
+                }
+                if (version == 2 && cache.contains("legacy_ids") && cache.at("legacy_ids").contains(vin)) {
+                    for (const auto& id : cache.at("legacy_ids").at(vin)) {
+                        const auto legacy = id.get<std::string>();
+                        if (!valid_property_id(legacy)) throw std::runtime_error("invalid cached legacy ID");
+                        entry->legacy_ids.insert(legacy);
+                    }
                 }
                 if (!entry->properties.empty()) restored.emplace(vin, std::move(entry));
             }
             devices = std::move(restored);
+            cache_dirty = version == 1;
             std::cerr << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
             std::cerr << "[homie] cannot load field cache: " << e.what() << '\n';
@@ -198,12 +237,14 @@ class HomiePublisher {
     void save() {
         if (!cache_dirty) return;
         json vehicles = json::object();
+        json legacy_ids = json::object();
         for (const auto& [vin, d] : devices) {
             for (const auto& [id, p] : d->properties) {
-                vehicles[vin][p.name] = {{"datatype", p.datatype}, {"unit", p.unit}, {"value", p.value}};
+                vehicles[vin][p.name] = {{"id", id}, {"datatype", p.datatype}, {"unit", p.unit}, {"value", p.value}};
             }
+            if (!d->legacy_ids.empty()) legacy_ids[vin] = d->legacy_ids;
         }
-        if (write_file_atomic(cache_path, json{{"version", 1}, {"vehicles", vehicles}}.dump())) {
+        if (write_file_atomic(cache_path, json{{"version", 2}, {"vehicles", vehicles}, {"legacy_ids", legacy_ids}}.dump())) {
             cache_dirty = false;
         } else {
             std::cerr << "[homie] cannot save field cache\n";
@@ -234,7 +275,7 @@ public:
                 // Homie 4 does not allow empty property payloads.
                 if (p.value.empty()) continue;
                 auto& d = device(vin);
-                const auto id = property_id(name);
+                const auto id = property_id(d, name);
                 const auto previous = d.properties.find(id);
                 if (previous == d.properties.end()) {
                     std::cerr << "[homie] " << d.id << " new property '" << name << "'\n";

@@ -1,5 +1,6 @@
 """Exercise the production Homie publisher with deterministic MQTT clients."""
 from pathlib import Path
+import json
 import shutil
 import subprocess
 import tempfile
@@ -98,12 +99,18 @@ static bool write_file_atomic(const std::string& path, const std::string& conten
 }
 #include "homie_publisher.hpp"
 static std::string base = "homie/bmw-wby8p610007l21042/";
-static std::string id(const std::string& key) {
+static std::string legacy_id(const std::string& key) {
     std::string s = "p-";
     for (unsigned char c : key) {
         s += "0123456789abcdef"[c >> 4]; s += "0123456789abcdef"[c & 15];
     }
     return s;
+}
+static std::string active_cache;
+static std::string id(const std::string& key) {
+    json cache;
+    std::ifstream input(active_cache); input >> cache;
+    return cache.at("vehicles").at("WBY8P610007L21042").at(key).at("id").get<std::string>();
 }
 static std::string latest(const std::string& topic) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it)
@@ -114,12 +121,35 @@ int main(int argc, char** argv) {
     const std::string scenario = argv[1], cache = argv[2];
     const std::string vin = "WBY8P610007L21042", key = "vehicle.drivetrain.electricEngine.charging.smeEnergyDeltaFullyCharged";
     const auto field = json{{key, {{"value", 0}, {"unit", "kWh"}}}};
+    active_cache = cache;
     HomiePublisher publisher(cache);
     if (scenario == "invalid") {
         publisher.ingest("invalid", field);
         publisher.ingest(vin, {{"null", {{"value", nullptr}}}, {"empty", {{"value", ""}}}, {"bad", 1}});
         publisher.tick(true);
         assert(clients.empty() && messages.empty());
+    } else if (scenario == "names") {
+        const std::string hood = "vehicle.body.hood.isOpen";
+        const std::string tire = "vehicle.chassis.axle.row1.wheel.left.tire.pressure";
+        const std::string unknown = "vehicle.newSystem.HTTPStatus";
+        publisher.ingest(vin, {{hood, {{"value", false}}}, {tire, {{"value", 290}}}, {unknown, {{"value", "OK"}}}});
+        publisher.tick(true);
+        assert(id(hood) == "body-hood-is-open");
+        assert(id(tire) == "chassis-axle-row1-wheel-left-tire-pressure");
+        assert(id(unknown) == "new-system-http-status");
+        assert(latest(base + "telemetry/body-hood-is-open/$name") == "Hood open");
+        assert(latest(base + "telemetry/chassis-axle-row1-wheel-left-tire-pressure/$name") == "Tire pressure — front left");
+        assert(latest(base + "telemetry/new-system-http-status/$name") == "New system http status");
+        assert(latest(base + "telemetry/$name") == "Vehicle data");
+    } else if (scenario == "migration") {
+        publisher.tick(true);
+        const std::string hood = "vehicle.body.hood.isOpen";
+        assert(id(hood) == "body-hood-is-open");
+        assert(latest(base + "telemetry/body-hood-is-open") == "false");
+        assert(latest(base + "telemetry/body-hood-is-open/$name") == "Hood open");
+        for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
+            assert(latest(base + "telemetry/" + legacy_id(hood) + suffix).empty());
+        assert(latest(base + "telemetry/$properties").find(legacy_id(hood)) == std::string::npos);
     } else if (scenario == "restore") {
         publisher.tick(true);
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
@@ -129,6 +159,7 @@ int main(int argc, char** argv) {
         publisher.ingest(vin, field);
         publisher.tick(true);
         assert(clients.size() == 1 && tls_calls == 1);
+        assert(id(key) == "drivetrain-electric-engine-charging-sme-energy-delta-fully-charged");
         assert(wills[0] == std::make_pair(base + "$state", std::string("lost")));
         assert(latest(base + "$homie") == "4.0.0");
         assert(latest(base + "$state") == "ready");
@@ -146,6 +177,8 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/$properties").find(id(key)) != std::string::npos);
         assert(latest(base + "telemetry/$properties").find(id("new.field")) != std::string::npos);
         assert(id("new.field") != id("new-field"));
+        assert(id("new-field") == "new-field");
+        assert(id("new.field").rfind("new-field-", 0) == 0);
         assert(latest(base + "telemetry/" + id("new.field") + "/$datatype") == "boolean");
         assert(latest(base + "telemetry/" + id("new-field") + "/$datatype") == "string");
         publisher.tick(false);
@@ -229,3 +262,21 @@ int main(int argc, char** argv) {
         cache = self.base / 'corrupt.json'
         cache.write_text('{broken')
         self.run_scenario('corrupt', cache)
+
+    def test_readable_ids_known_labels_and_unknown_field_fallback(self):
+        self.run_scenario('names', self.base / 'names.json')
+
+    def test_legacy_cache_migrates_values_and_clears_retained_topics(self):
+        cache = self.base / 'migration.json'
+        cache.write_text(json.dumps({
+            'version': 1,
+            'vehicles': {'WBY8P610007L21042': {
+                'vehicle.body.hood.isOpen': {
+                    'datatype': 'boolean', 'unit': '', 'value': 'false',
+                },
+            }},
+        }))
+        self.run_scenario('migration', cache)
+        self.assertEqual(json.loads(cache.read_text())['version'], 2)
+        # Retried cleanup must survive another restart after the cache was migrated.
+        self.run_scenario('migration', cache)
