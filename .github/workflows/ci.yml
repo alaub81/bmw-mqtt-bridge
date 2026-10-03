@@ -98,8 +98,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Validate Compose configuration
         env:
-          BMW_CLIENT_ID: ci-client
-          BMW_GCID: ci-account
+          BMB_BMW_CLIENT_ID: ci-client
+          BMB_BMW_GCID: ci-account
         run: |
           docker compose --env-file .env.sample -f docker-compose.example.yml config --quiet
           docker compose --env-file .env.sample -f docker-compose.dev.yml config --quiet

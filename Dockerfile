@@ -32,11 +32,11 @@ COPY --chmod=0755 --from=builder /build/src/bmw_mqtt_bridge /app/bmw_mqtt_bridge
 COPY --chmod=0755 ./resources/bmw_flow.sh .
 COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
-ENV BMW_HOST=customer.streaming-cardata.bmwgroup.com \
-    BMW_PORT=9000 \
-    MQTT_LOCAL_HOST=host.docker.internal \
-    MQTT_LOCAL_PORT=1883 \
-    MQTT_LOCAL_PREFIX=bmw/
+ENV BMB_BMW_HOST=customer.streaming-cardata.bmwgroup.com \
+    BMB_BMW_PORT=9000 \
+    BMB_MQTT_LOCAL_HOST=host.docker.internal \
+    BMB_MQTT_LOCAL_PORT=1883 \
+    BMB_MQTT_LOCAL_PREFIX=bmw/
 
 VOLUME ["/app/token"]
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

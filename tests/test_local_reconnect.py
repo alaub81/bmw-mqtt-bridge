@@ -30,9 +30,9 @@ struct mosquitto { bool stopped = false; };
 static mosquitto* g_local = nullptr;
 static std::mutex g_local_mutex;
 static std::atomic<bool> g_local_connected{false}, g_stop{false};
-static std::string MQTT_LOCAL_CLIENT_ID = "bmw5-bridge", MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
-static std::string MQTT_LOCAL_USER = "user", MQTT_LOCAL_PASSWORD = "password", MQTT_LOCAL_HOST = "mqtt.test";
-static int MQTT_LOCAL_PORT = 8883;
+static std::string BMB_MQTT_LOCAL_CLIENT_ID = "bmw5-bridge", MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
+static std::string BMB_MQTT_LOCAL_USER = "user", BMB_MQTT_LOCAL_PASSWORD = "password", BMB_MQTT_LOCAL_HOST = "mqtt.test";
+static int BMB_MQTT_LOCAL_PORT = 8883;
 constexpr int MOSQ_ERR_SUCCESS = 0, MOSQ_ERR_NO_CONN = 4;
 static int created = 0, destroyed = 0, connect_calls = 0, tls_calls = 0, publish_calls = 0;
 static int connect_result = 0, loop_result = 0;
@@ -46,7 +46,7 @@ const char* mosquitto_strerror(int) { return "test result"; }
 mosquitto* mosquitto_new(const char* id, bool clean, void*) {
     ++created;
     assert(clean);
-    assert(MQTT_LOCAL_CLIENT_ID.empty() ? id == nullptr : std::string(id) == MQTT_LOCAL_CLIENT_ID);
+    assert(BMB_MQTT_LOCAL_CLIENT_ID.empty() ? id == nullptr : std::string(id) == BMB_MQTT_LOCAL_CLIENT_ID);
     return allocation_failure ? nullptr : new mosquitto;
 }
 void mosquitto_connect_callback_set(mosquitto*, void (*callback)(mosquitto*, void*, int)) {
@@ -72,13 +72,13 @@ int mosquitto_will_set(mosquitto*, const char* topic, size_t size,
     return 0;
 }
 int mosquitto_username_pw_set(mosquitto*, const char* user, const char* password) {
-    assert(std::string(user) == MQTT_LOCAL_USER && std::string(password) == MQTT_LOCAL_PASSWORD);
+    assert(std::string(user) == BMB_MQTT_LOCAL_USER && std::string(password) == BMB_MQTT_LOCAL_PASSWORD);
     return 0;
 }
 bool configure_local_tls(mosquitto*) { ++tls_calls; return !tls_failure; }
 int mosquitto_connect_async(mosquitto* client, const char* host, int port, int keepalive) {
     assert(g_local == client);
-    assert(std::string(host) == MQTT_LOCAL_HOST && port == MQTT_LOCAL_PORT && keepalive == 30);
+    assert(std::string(host) == BMB_MQTT_LOCAL_HOST && port == BMB_MQTT_LOCAL_PORT && keepalive == 30);
     ++connect_calls;
     return connect_result;
 }
@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
         check_local_connection(start + std::chrono::seconds(60));
         assert(created == 0);
     } else if (scenario == "generated-id") {
-        MQTT_LOCAL_CLIENT_ID.clear();
+        BMB_MQTT_LOCAL_CLIENT_ID.clear();
         assert(restart_local_client());
     } else { return 1; }
     stop_local_client(false);

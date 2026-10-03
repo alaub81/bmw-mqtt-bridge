@@ -38,8 +38,8 @@ struct mosquitto_property {};
 static mosquitto* g_bmw = nullptr;
 static std::atomic<bool> g_connected{false}, g_stop{false}, g_bmw_reconnect_pending{false};
 static std::atomic<long long> g_next_connect_after{0};
-static std::string BMW_HOST = "bmw.test", BMW_GCID = "test-account";
-static int BMW_PORT = 9000;
+static std::string BMB_BMW_HOST = "bmw.test", BMB_BMW_GCID = "test-account";
+static int BMB_BMW_PORT = 9000;
 constexpr int MOSQ_ERR_SUCCESS = 0, MOSQ_ERR_NO_CONN = 4, MOSQ_LOG_ERR = 1, MOSQ_LOG_WARNING = 2;
 static int created = 0, destroyed = 0, attempts = 0, disconnects = 0, subscriptions = 0;
 static int connect_result = 0, loop_result = 0, join_reason = 0;
@@ -71,7 +71,7 @@ int mosquitto_loop_stop(mosquitto* client, bool force) {
 }
 void mosquitto_destroy(mosquitto* client) { ++destroyed; delete client; }
 int mosquitto_connect_async(mosquitto* client, const char* host, int port, int keepalive) {
-    assert(client == g_bmw && std::string(host) == BMW_HOST && port == BMW_PORT && keepalive == 30);
+    assert(client == g_bmw && std::string(host) == BMB_BMW_HOST && port == BMB_BMW_PORT && keepalive == 30);
     ++attempts;
     connect_precedes_loop = true;
     client->disconnect_requested = false;
@@ -91,7 +91,7 @@ static void tick(long seconds) {
 static void library_reconnect() {
     // Model loop_start's automatic retry unless disconnect was explicitly requested.
     if (g_bmw && !g_bmw->disconnect_requested && !g_connected) {
-        mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
+        mosquitto_connect_async(g_bmw, BMB_BMW_HOST.c_str(), BMB_BMW_PORT, 30);
     }
 }
 int main(int argc, char** argv) {

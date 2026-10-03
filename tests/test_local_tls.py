@@ -16,7 +16,7 @@ class LocalTlsTests(unittest.TestCase):
         source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
         env_helpers = source.split('// ---------------------- tiny helpers for env config ----------------------')[1]
         env_helpers = env_helpers.split('// ===================== Configuration =====================')[0]
-        tls_setup = source.split('// MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.')[1]
+        tls_setup = source.split('// BMB_MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.')[1]
         tls_setup = tls_setup.split('static std::string token_dir() {')[0]
         path = Path(cls.temp.name) / 'tls.cpp'
         path.write_text(r'''
@@ -47,51 +47,51 @@ const char* mosquitto_strerror(int) { return "mock TLS failure"; }
 int main(int argc, char** argv) {
     mosquitto client;
     const std::string scenario = argv[1];
-    unsetenv("MQTT_LOCAL_TLS");
-    unsetenv("MQTT_LOCAL_TLS_VERIFY");
-    unsetenv("MQTT_LOCAL_TLS_CA_FILE");
+    unsetenv("BMB_MQTT_LOCAL_TLS");
+    unsetenv("BMB_MQTT_LOCAL_TLS_VERIFY");
+    unsetenv("BMB_MQTT_LOCAL_TLS_CA_FILE");
     if (scenario == "default") {
         assert(configure_local_tls(&client));
         assert(calls == 0);
     } else if (scenario == "secure") {
-        setenv("MQTT_LOCAL_TLS", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "true", 1);
         assert(configure_local_tls(&client));
         assert(calls == 3 && verification == 1 && !insecure);
         assert(ca == "/etc/ssl/certs/ca-certificates.crt");
     } else if (scenario == "self-signed") {
-        setenv("MQTT_LOCAL_TLS", "true", 1);
-        setenv("MQTT_LOCAL_TLS_VERIFY", "FaLsE", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS_VERIFY", "FaLsE", 1);
         assert(configure_local_tls(&client));
         assert(calls == 3 && verification == 0 && insecure);
     } else if (scenario == "custom-ca") {
-        setenv("MQTT_LOCAL_TLS", "true", 1);
-        setenv("MQTT_LOCAL_TLS_VERIFY", "true", 1);
-        setenv("MQTT_LOCAL_TLS_CA_FILE", "/mounted/ca.crt", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS_VERIFY", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS_CA_FILE", "/mounted/ca.crt", 1);
         assert(configure_local_tls(&client));
         assert(ca == "/mounted/ca.crt" && verification == 1 && !insecure);
     } else if (scenario == "invalid-switch") {
-        setenv("MQTT_LOCAL_TLS", "true", 1);
-        setenv("MQTT_LOCAL_TLS_VERIFY", "invalid", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS_VERIFY", "invalid", 1);
         assert(!configure_local_tls(&client));
         assert(calls == 0);
-        setenv("MQTT_LOCAL_TLS", "invalid", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "invalid", 1);
         assert(!configure_local_tls(&client));
     } else if (scenario == "tls-failure") {
-        setenv("MQTT_LOCAL_TLS", "true", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "true", 1);
         for (int i = 1; i <= 3; ++i) {
             calls = 0; fail_call = i;
             assert(!configure_local_tls(&client));
             assert(calls == i);
         }
     } else if (scenario == "off") {
-        setenv("MQTT_LOCAL_TLS", "false", 1);
+        setenv("BMB_MQTT_LOCAL_TLS", "false", 1);
         assert(configure_local_tls(&client));
         assert(calls == 0);
-        assert(!env_switch("MQTT_LOCAL_TLS", true));
-        setenv("MQTT_LOCAL_TLS", "false", 1);
-        assert(!env_switch("MQTT_LOCAL_TLS", true));
-        setenv("MQTT_LOCAL_TLS", "FALSE", 1);
-        assert(!env_switch("MQTT_LOCAL_TLS", true));
+        assert(!env_switch("BMB_MQTT_LOCAL_TLS", true));
+        setenv("BMB_MQTT_LOCAL_TLS", "false", 1);
+        assert(!env_switch("BMB_MQTT_LOCAL_TLS", true));
+        setenv("BMB_MQTT_LOCAL_TLS", "FALSE", 1);
+        assert(!env_switch("BMB_MQTT_LOCAL_TLS", true));
     } else { return 1; }
 }
 ''')

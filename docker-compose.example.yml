@@ -2,23 +2,23 @@ services:
   bmw-mqtt-bridge:
     image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
     environment:
-      HEALTH_MQTT_DISCONNECT_TIMEOUT: ${HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
-      BMW_CLIENT_ID: ${BMW_CLIENT_ID:?Set BMW_CLIENT_ID in .env}
-      BMW_GCID: ${BMW_GCID:?Set BMW_GCID in .env}
-      BMW_HOST: ${BMW_HOST:-customer.streaming-cardata.bmwgroup.com}
-      BMW_PORT: ${BMW_PORT:-9000}
-      BMW_STATUS_STABLE_DELAY: ${BMW_STATUS_STABLE_DELAY:-5}
-      MQTT_LOCAL_HOST: ${MQTT_LOCAL_HOST:-host.docker.internal}
-      MQTT_LOCAL_PORT: ${MQTT_LOCAL_PORT:-1883}
-      MQTT_LOCAL_PREFIX: ${MQTT_LOCAL_PREFIX:-bmw/}
-      MQTT_LOCAL_CLIENT_ID: ${MQTT_LOCAL_CLIENT_ID:-}
-      MQTT_LOCAL_USER: ${MQTT_LOCAL_USER:-}
-      MQTT_LOCAL_PASSWORD: ${MQTT_LOCAL_PASSWORD:-}
-      MQTT_LOCAL_TLS: "${MQTT_LOCAL_TLS:-false}"
-      MQTT_LOCAL_TLS_VERIFY: "${MQTT_LOCAL_TLS_VERIFY:-true}"
-      MQTT_LOCAL_TLS_CA_FILE: ${MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
-      MQTT_SPLIT_TOPICS: ${MQTT_SPLIT_TOPICS:-0}
-      MQTT_RETAIN: ${MQTT_RETAIN:-0}
+      BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT: ${BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
+      BMB_BMW_CLIENT_ID: ${BMB_BMW_CLIENT_ID:?Set BMB_BMW_CLIENT_ID in .env}
+      BMB_BMW_GCID: ${BMB_BMW_GCID:?Set BMB_BMW_GCID in .env}
+      BMB_BMW_HOST: ${BMB_BMW_HOST:-customer.streaming-cardata.bmwgroup.com}
+      BMB_BMW_PORT: ${BMB_BMW_PORT:-9000}
+      BMB_BMW_STATUS_STABLE_DELAY: ${BMB_BMW_STATUS_STABLE_DELAY:-5}
+      BMB_MQTT_LOCAL_HOST: ${BMB_MQTT_LOCAL_HOST:-host.docker.internal}
+      BMB_MQTT_LOCAL_PORT: ${BMB_MQTT_LOCAL_PORT:-1883}
+      BMB_MQTT_LOCAL_PREFIX: ${BMB_MQTT_LOCAL_PREFIX:-bmw/}
+      BMB_MQTT_LOCAL_CLIENT_ID: ${BMB_MQTT_LOCAL_CLIENT_ID:-}
+      BMB_MQTT_LOCAL_USER: ${BMB_MQTT_LOCAL_USER:-}
+      BMB_MQTT_LOCAL_PASSWORD: ${BMB_MQTT_LOCAL_PASSWORD:-}
+      BMB_MQTT_LOCAL_TLS: "${BMB_MQTT_LOCAL_TLS:-false}"
+      BMB_MQTT_LOCAL_TLS_VERIFY: "${BMB_MQTT_LOCAL_TLS_VERIFY:-true}"
+      BMB_MQTT_LOCAL_TLS_CA_FILE: ${BMB_MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+      BMB_MQTT_SPLIT_TOPICS: ${BMB_MQTT_SPLIT_TOPICS:-0}
+      BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -29,15 +29,15 @@ services:
         - CMD-SHELL
         - >-
           test /proc/1/exe -ef /app/bmw_mqtt_bridge &&
-          read -r heartbeat_time heartbeat_pid local_offline bmw_offline < "$${BMW_HEARTBEAT_FILE:-/tmp/bmw-mqtt-bridge-heartbeat}" &&
+          read -r heartbeat_time heartbeat_pid local_offline bmw_offline < "$${BMB_BMW_HEARTBEAT_FILE:-/tmp/bmw-mqtt-bridge-heartbeat}" &&
           test "$$heartbeat_pid" = 1 &&
           now=$$(date +%s) &&
           age=$$((now - heartbeat_time)) &&
           test "$$age" -ge 0 && test "$$age" -le 90 &&
-          test "$$HEALTH_MQTT_DISCONNECT_TIMEOUT" -gt 0 &&
+          test "$$BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT" -gt 0 &&
           test "$$local_offline" -ge 0 && test "$$bmw_offline" -ge 0 &&
-          test "$$local_offline" -lt "$$HEALTH_MQTT_DISCONNECT_TIMEOUT" &&
-          test "$$bmw_offline" -lt "$$HEALTH_MQTT_DISCONNECT_TIMEOUT"
+          test "$$local_offline" -lt "$$BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT" &&
+          test "$$bmw_offline" -lt "$$BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT"
       interval: 30s
       timeout: 5s
       start_period: 30s

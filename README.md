@@ -88,7 +88,7 @@ follows:
    ⚠️ *Do **not** click on "Authenticate Vehicle"!*
 4. Copy the **Client ID** and insert it into the `.env` file
 5. Scroll down to **CARDATA STREAM → Show Connection Details**
-6. Copy the **USERNAME** and insert it into `.env` file as **BMW_GCID**
+6. Copy the **USERNAME** and insert it into `.env` file as **BMB_BMW_GCID**
 7. The other options in the `.env` file are for advanced setups – you can safely ignore them in most cases
 
 After this setup, your bridge will be able to authenticate against the official BMW CarData MQTT interface.
@@ -118,15 +118,15 @@ volumes:
 Minimal `.env`:
 
 ```dotenv
-BMW_CLIENT_ID=your-client-id
-BMW_GCID=your-account-id
-MQTT_LOCAL_HOST=192.168.1.10
+BMB_BMW_CLIENT_ID=your-client-id
+BMB_BMW_GCID=your-account-id
+BMB_MQTT_LOCAL_HOST=192.168.1.10
 ```
 
 Replace the IDs and broker address. This example uses an MQTT broker reachable
 at that address on port 1883 without authentication or TLS. Add optional settings
 to `.env` as needed; `env_file` passes them to the container. For example, a broker
-requiring authentication needs `MQTT_LOCAL_USER` and `MQTT_LOCAL_PASSWORD`.
+requiring authentication needs `BMB_MQTT_LOCAL_USER` and `BMB_MQTT_LOCAL_PASSWORD`.
 The application uses defaults for all other settings.
 
 Authenticate once, then start the bridge:
@@ -147,7 +147,7 @@ This minimal configuration omits the Docker healthcheck. For the full configurat
 including health monitoring, copy `docker-compose.example.yml` to
 `docker-compose.yml` and `.env.sample` to `.env` as described below. Your local
 configuration files are ignored by Git. The full template explicitly forwards
-its listed settings; additional overrides such as `BMW_TOKEN_DIR` must be added
+its listed settings; additional overrides such as `BMB_BMW_TOKEN_DIR` must be added
 to the service's `environment` section. See [Environment variables](#environment-variables).
 
 ## Docker installation
@@ -168,7 +168,7 @@ cp .env.sample .env
 chmod 600 .env
 ```
 
-Edit `.env` and set `BMW_CLIENT_ID`, `BMW_GCID` and your
+Edit `.env` and set `BMB_BMW_CLIENT_ID`, `BMB_BMW_GCID` and your
 local MQTT settings. `BMB_VERSION=latest` selects the newest stable release;
 use a published tag such as `BMB_VERSION=1.2.3` (without `v`) to select a version.
 An unset or empty `BMB_VERSION` also falls back to `latest`. A push to `main`
@@ -190,7 +190,7 @@ see [GitHub's container registry authentication documentation](https://docs.gith
 
 ### Connecting to the Docker host
 
-The default `MQTT_LOCAL_HOST=host.docker.internal` addresses a broker reachable
+The default `BMB_MQTT_LOCAL_HOST=host.docker.internal` addresses a broker reachable
 through the Docker host. The supplied Compose configuration includes
 `extra_hosts: ["host.docker.internal:host-gateway"]` for Docker Engine on Linux.
 Docker Desktop also supports access to host services. See the
@@ -198,7 +198,7 @@ Docker Desktop also supports access to host services. See the
 and [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/#i-want-to-connect-from-a-container-to-a-service-on-the-host).
 
 If your broker has its own IP or DNS name, or runs as a service on the same
-Docker network (for example `MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
+Docker network (for example `BMB_MQTT_LOCAL_HOST=mosquitto`), the `extra_hosts`
 entry is unnecessary and can be removed. The broker must listen on an interface
 reachable from the container; a broker bound only to `127.0.0.1` on a Linux host
 is not reachable through the bridge network. No port publishing is needed for
@@ -258,7 +258,7 @@ docker compose logs -f bmw-mqtt-bridge
 A fresh volume is empty: previous token files in a host bind-mount directory or
 secret files are not migrated automatically. Either authenticate as above or
 copy the latest valid pair into the volume before starting. Old files are left
-untouched. Do not run multiple bridges with the same BMW_GCID or token volume.
+untouched. Do not run multiple bridges with the same BMB_BMW_GCID or token volume.
 
 ### Configuration changes
 
@@ -296,15 +296,15 @@ For a broker with a self-signed certificate, enable encryption and disable
 certificate verification in the host `.env`:
 
 ```dotenv
-MQTT_LOCAL_HOST=mqtt.example.local
-MQTT_LOCAL_PORT=8883
-MQTT_LOCAL_TLS=true
-MQTT_LOCAL_TLS_VERIFY=false
-MQTT_LOCAL_USER=your-user
-MQTT_LOCAL_PASSWORD=your-password
+BMB_MQTT_LOCAL_HOST=mqtt.example.local
+BMB_MQTT_LOCAL_PORT=8883
+BMB_MQTT_LOCAL_TLS=true
+BMB_MQTT_LOCAL_TLS_VERIFY=false
+BMB_MQTT_LOCAL_USER=your-user
+BMB_MQTT_LOCAL_PASSWORD=your-password
 ```
 
-`MQTT_LOCAL_HOST` is a hostname or IP, without an `mqtts://` prefix. Select the actual
+`BMB_MQTT_LOCAL_HOST` is a hostname or IP, without an `mqtts://` prefix. Select the actual
 TLS port configured on your broker; changing the port alone does not enable TLS.
 The switches accept `true/false`, case insensitive. By default,
 TLS is disabled and verification is enabled whenever TLS is switched on.
@@ -312,7 +312,7 @@ Turning verification off disables both certificate chain and hostname checks:
 the connection is encrypted, but the server identity is not checked. These
 settings apply only to your own broker, not to the BMW connection.
 
-Alternatively, keep `MQTT_LOCAL_TLS_VERIFY=true` and trust your self-signed certificate
+Alternatively, keep `BMB_MQTT_LOCAL_TLS_VERIFY=true` and trust your self-signed certificate
 or its issuing CA by mounting a PEM certificate file read-only:
 
 ```yaml
@@ -323,7 +323,7 @@ services:
       - ./certs/mqtt-ca.crt:/app/certs/mqtt-ca.crt:ro
 ```
 
-Set `MQTT_LOCAL_TLS_CA_FILE=/app/certs/mqtt-ca.crt` in `.env`. `MQTT_LOCAL_HOST` must match
+Set `BMB_MQTT_LOCAL_TLS_CA_FILE=/app/certs/mqtt-ca.crt` in `.env`. `BMB_MQTT_LOCAL_HOST` must match
 the certificate's hostname/IP. Without a custom CA file, the image's system CA
 bundle is used. A missing/unreadable CA file causes startup to fail rather than
 falling back to plaintext. Mutual TLS with client certificates is not configured.
@@ -336,10 +336,10 @@ docker compose up -d --force-recreate
 
 ### Local MQTT client ID
 
-Set `MQTT_LOCAL_CLIENT_ID=bmw5-bridge` in the host `.env` to use a fixed client ID for
+Set `BMB_MQTT_LOCAL_CLIENT_ID=bmw5-bridge` in the host `.env` to use a fixed client ID for
 your MQTT broker. Leave it empty to let Mosquitto generate a random ID. Use a
 different value for each concurrent instance connected to the same broker.
-This setting is independent of the BMW OAuth `BMW_CLIENT_ID` and `MQTT_LOCAL_PREFIX`.
+This setting is independent of the BMW OAuth `BMB_BMW_CLIENT_ID` and `BMB_MQTT_LOCAL_PREFIX`.
 
 ### Compose healthcheck
 
@@ -351,7 +351,7 @@ that PID 1 is executing `/app/bmw_mqtt_bridge` and that the heartbeat in
 old. Startup grace is 30 seconds, timeout is 5 seconds, and 3 failed checks mark
 the container unhealthy. It also fails when either the local or BMW MQTT
 connection has been continuously unavailable for at least
-`HEALTH_MQTT_DISCONNECT_TIMEOUT` seconds (default: 120). Set this positive value
+`BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT` seconds (default: 120). Set this positive value
 in the host `.env` to change the grace period for both connections. With the
 30-second interval and 3 retries, an outage normally marks the container unhealthy
 roughly 3 minutes after it starts; the 120-second threshold begins failed checks,
@@ -366,7 +366,7 @@ Docker healthcheck restores `healthy`; both connections must be within their
 allowed downtime. No vehicle messages are required, so a parked car does not
 cause a failed check. The heartbeat is removed on startup and clean shutdown.
 The bridge and healthcheck default to `/tmp/bmw-mqtt-bridge-heartbeat`.
-`BMW_HEARTBEAT_FILE` can override this internal path when explicitly supplied
+`BMB_BMW_HEARTBEAT_FILE` can override this internal path when explicitly supplied
 through the container environment.
 The file lives in `/tmp`, outside the persistent token volume.
 
@@ -383,6 +383,10 @@ docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q bmw-mqt
 ## Environment variables
 
 Configuration is read exclusively from the container process environment.
+All bridge settings use the `BMB_` prefix to avoid collisions with other services
+in a shared Compose project. Previous unprefixed names are no longer read;
+rename them in existing `.env` files and Compose environment mappings before
+updating. `BMB_VERSION` keeps its existing name.
 Docker Compose reads the host `.env` and passes the listed options to the
 container. Neither the bridge nor the authentication helper loads a file as
 fallback. An old `.env` in the token volume is ignored.
@@ -401,14 +405,14 @@ Initial authentication creates them; the bridge refreshes them itself. See
 
 | Variable    | Type | Default                                        | Required | Description |
 |-------------|------|-------------------------------------------------|----------|-------------|
-| `BMW_CLIENT_ID` | str  | *(none)*                                       | **Yes**  | BMW CarData **Client ID** (GUID) from the MyBMW portal. Placeholder values are rejected. |
-| `BMW_GCID`      | str  | *(none)*                                       | **Yes**  | BMW **GCID / username** for the MQTT broker (from “Show Connection Details”). Placeholder values are rejected. |
-| `BMW_HOST`  | str  | `customer.streaming-cardata.bmwgroup.com`      | No       | BMW CarData MQTT hostname. |
-| `BMW_PORT`  | int  | `9000`                                          | No       | BMW CarData MQTT port. |
+| `BMB_BMW_CLIENT_ID` | str  | *(none)*                                       | **Yes**  | BMW CarData **Client ID** (GUID) from the MyBMW portal. Placeholder values are rejected. |
+| `BMB_BMW_GCID`      | str  | *(none)*                                       | **Yes**  | BMW **GCID / username** for the MQTT broker (from “Show Connection Details”). Placeholder values are rejected. |
+| `BMB_BMW_HOST`  | str  | `customer.streaming-cardata.bmwgroup.com`      | No       | BMW CarData MQTT hostname. |
+| `BMB_BMW_PORT`  | int  | `9000`                                          | No       | BMW CarData MQTT port. |
 
 Validation on startup:
 
-- If `BMW_CLIENT_ID` or `BMW_GCID` are missing/placeholder → the program exits with an error.
+- If `BMB_BMW_CLIENT_ID` or `BMB_BMW_GCID` are missing/placeholder → the program exits with an error.
 
 ---
 
@@ -416,41 +420,41 @@ Validation on startup:
 
 | Variable         | Type | Default     | Required | Description |
 |------------------|------|-------------|----------|-------------|
-| `MQTT_LOCAL_HOST`     | str  | `host.docker.internal` | No       | Host/IP of your local MQTT broker. |
-| `MQTT_LOCAL_PORT`     | int  | `1883`      | No       | Port of your local MQTT broker. |
-| `MQTT_LOCAL_CLIENT_ID` | str | *(empty)* | No | Client ID for your MQTT broker. Empty generates a random ID; configured IDs must be unique per running instance. |
-| `MQTT_LOCAL_USER`     | str  | *(empty)*   | No       | Username for local broker authentication (optional). |
-| `MQTT_LOCAL_PASSWORD` | str  | *(empty)*   | No       | Password for local broker authentication (optional). |
-| `MQTT_LOCAL_TLS` | bool | `false` | No | Enable TLS for the local broker. Accepts `true/false` (case insensitive). |
-| `MQTT_LOCAL_TLS_VERIFY` | bool | `true` | No | Verify certificate chain and hostname when TLS is enabled. `false` disables both checks; encryption stays enabled, but the broker identity is not verified. |
-| `MQTT_LOCAL_TLS_CA_FILE` | str | `/etc/ssl/certs/ca-certificates.crt` | No | Container path to a PEM CA/certificate file. Used when TLS is enabled. |
+| `BMB_MQTT_LOCAL_HOST`     | str  | `host.docker.internal` | No       | Host/IP of your local MQTT broker. |
+| `BMB_MQTT_LOCAL_PORT`     | int  | `1883`      | No       | Port of your local MQTT broker. |
+| `BMB_MQTT_LOCAL_CLIENT_ID` | str | *(empty)* | No | Client ID for your MQTT broker. Empty generates a random ID; configured IDs must be unique per running instance. |
+| `BMB_MQTT_LOCAL_USER`     | str  | *(empty)*   | No       | Username for local broker authentication (optional). |
+| `BMB_MQTT_LOCAL_PASSWORD` | str  | *(empty)*   | No       | Password for local broker authentication (optional). |
+| `BMB_MQTT_LOCAL_TLS` | bool | `false` | No | Enable TLS for the local broker. Accepts `true/false` (case insensitive). |
+| `BMB_MQTT_LOCAL_TLS_VERIFY` | bool | `true` | No | Verify certificate chain and hostname when TLS is enabled. `false` disables both checks; encryption stays enabled, but the broker identity is not verified. |
+| `BMB_MQTT_LOCAL_TLS_CA_FILE` | str | `/etc/ssl/certs/ca-certificates.crt` | No | Container path to a PEM CA/certificate file. Used when TLS is enabled. |
 
 ### 🧭 Topic Prefix & Status Topic
 
 | Variable       | Type | Default | Required | Description |
 |----------------|------|---------|----------|-------------|
-| `MQTT_LOCAL_PREFIX` | str  | `bmw/`  | No       | Topic prefix for all republished topics. If empty, the program falls back to `bmw/`. A trailing slash is **enforced** automatically. |
-| `BMW_STATUS_STABLE_DELAY` | int  | 5  | No       | delay time for bmw connection state true->false: anti flickering during token refresh |
+| `BMB_MQTT_LOCAL_PREFIX` | str  | `bmw/`  | No       | Topic prefix for all republished topics. If empty, the program falls back to `bmw/`. A trailing slash is **enforced** automatically. |
+| `BMB_BMW_STATUS_STABLE_DELAY` | int  | 5  | No       | delay time for bmw connection state true->false: anti flickering during token refresh |
 
 ### ✂️ Split Topics
 
 | Variable        | Type | Default | Required | Description |
 |-----------------|------|---------|----------|-------------|
-| `MQTT_SPLIT_TOPICS`  | int  | `0`     | No       | `0` = disabled, `1` = enabled. When enabled, JSON payloads are parsed and individual fields are republished under `vehicles/<VIN>/<propertyName>`. |
+| `BMB_MQTT_SPLIT_TOPICS`  | int  | `0`     | No       | `0` = disabled, `1` = enabled. When enabled, JSON payloads are parsed and individual fields are republished under `vehicles/<VIN>/<propertyName>`. |
 
 ### 🔁 Retained Messages
 
 | Variable       | Type | Default | Required | Description |
 |----------------|------|---------|----------|-------------|
-| `MQTT_RETAIN`  | int  | `0`     | No       | `0` = do not retain (default), `1` = retain republished topics. Affects **RAW**, **Legacy**, and **Split** topics. The **status topic** is always retained regardless of this setting. |
+| `BMB_MQTT_RETAIN`  | int  | `0`     | No       | `0` = do not retain (default), `1` = retain republished topics. Affects **RAW**, **Legacy**, and **Split** topics. The **status topic** is always retained regardless of this setting. |
 
 ### Runtime and state settings
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BMW_TOKEN_DIR` | `/app/token` | Default token directory shared by authentication and bridge operation. Optional container environment override; adjust the volume mount to the same path. |
-| `BMW_HEARTBEAT_FILE` | `/tmp/bmw-mqtt-bridge-heartbeat` | Default heartbeat path shared by the main loop and Compose healthcheck. Optional container environment override. |
-| `HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
+| `BMB_BMW_TOKEN_DIR` | `/app/token` | Default token directory shared by authentication and bridge operation. Optional container environment override; adjust the volume mount to the same path. |
+| `BMB_BMW_HEARTBEAT_FILE` | `/tmp/bmw-mqtt-bridge-heartbeat` | Default heartbeat path shared by the main loop and Compose healthcheck. Optional container environment override. |
+| `BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
 
 The default Compose file omits both path variables. The application,
 authentication helper and entrypoint provide their own defaults, and the
@@ -461,24 +465,24 @@ service configuration, for example:
 services:
   bmw-mqtt-bridge:
     environment:
-      BMW_TOKEN_DIR: /app/state
-      BMW_HEARTBEAT_FILE: /tmp/bridge-heartbeat
+      BMB_BMW_TOKEN_DIR: /app/state
+      BMB_BMW_HEARTBEAT_FILE: /tmp/bridge-heartbeat
     volumes:
       - data-token:/app/state
 ```
 
 Keep the existing connection environment settings when making this change.
-The token volume must be mounted at the chosen `BMW_TOKEN_DIR`; the healthcheck
-reads `BMW_HEARTBEAT_FILE` automatically. Adding these keys to the host `.env`
+The token volume must be mounted at the chosen `BMB_BMW_TOKEN_DIR`; the healthcheck
+reads `BMB_BMW_HEARTBEAT_FILE` automatically. Adding these keys to the host `.env`
 alone does not pass them to the container; declare them under `environment`.
 
 Numeric options reject invalid values instead of silently falling back to defaults.
-Both MQTT ports must be between 1 and 65535; `MQTT_SPLIT_TOPICS` and
-`MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
+Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS` and
+`BMB_MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
 
-The supplied `.env.sample` enables `MQTT_SPLIT_TOPICS=1`; the executable and Compose
-fallback default to `0` when it is not configured. The default `MQTT_LOCAL_HOST`
+The supplied `.env.sample` enables `BMB_MQTT_SPLIT_TOPICS=1`; the executable and Compose
+fallback default to `0` when it is not configured. The default `BMB_MQTT_LOCAL_HOST`
 is `host.docker.internal` in both Compose and the executable.
 
 ## MQTT topics
@@ -548,7 +552,7 @@ If you want a different topic prefix (for example if you have multiple cars or b
 you can configure it using this environment variable in your .env file:
 
 ```text
-MQTT_LOCAL_PREFIX=mycar/
+BMB_MQTT_LOCAL_PREFIX=mycar/
 ```
 
 The bridge will then publish:
@@ -573,9 +577,9 @@ snapshot. Callbacks from retired local clients are ignored.
 
 true is published immediately when the connection is established.
 
-false is published only after BMW_STATUS_STABLE_DELAY seconds of continuous disconnect (default: 5).
+false is published only after BMB_BMW_STATUS_STABLE_DELAY seconds of continuous disconnect (default: 5).
 
-Set BMW_STATUS_STABLE_DELAY=0 to disable the delay (instant switching).
+Set BMB_BMW_STATUS_STABLE_DELAY=0 to disable the delay (instant switching).
 
 This debounce avoids brief drops (e.g., during token refresh) from causing flicker in clients that monitor the status.
 
@@ -604,7 +608,7 @@ you can optionally enable **split topics**, which publish each data field under 
 add to your `.env` file:
 
 ```text
-MQTT_SPLIT_TOPICS=1
+BMB_MQTT_SPLIT_TOPICS=1
 ```
 
 This will create additional messages like:
@@ -619,12 +623,12 @@ bmw/vehicles/<VIN>/position       {"value":{"lat":48.1,"lon":11.6},"timestamp":1
 
 To ensure Home Assistant and other clients immediately see the last known state after a restart, the bridge can publish its republished MQTT messages **with the Retain flag**.
 
-**Default:** off (`MQTT_RETAIN=0`)
+**Default:** off (`BMB_MQTT_RETAIN=0`)
 **When enabled:** Retain applies to:
 
 - `bmw/raw/<VIN>/<eventName>`
 - `bmw/<VIN>/<eventName>` (Legacy)
-- `bmw/vehicles/<VIN>/<propertyName>` (when `MQTT_SPLIT_TOPICS=1`)
+- `bmw/vehicles/<VIN>/<propertyName>` (when `BMB_MQTT_SPLIT_TOPICS=1`)
 
 The **status topic** `bmw/status` is always retained (LWT), regardless of this setting, to keep availability tracking consistent.
 
@@ -633,7 +637,7 @@ The **status topic** `bmw/status` is always retained (LWT), regardless of this s
 edit the file: **.env**
 
 ```ini
-MQTT_RETAIN=1
+BMB_MQTT_RETAIN=1
 ```
 
 ### Clean up (remove retained messages)
@@ -651,7 +655,7 @@ or, alternatively, use MQTT Explorer
 
 - For **stateful topics** (e.g. door lock, availability, battery values) retain is very useful.
 - For **high-frequency or transient** topics, retain may be undesirable (it shows an outdated snapshot).
-- If you later change your `MQTT_LOCAL_PREFIX`, old retained messages under the previous prefix will remain in your broker until you remove them manually (see above).
+- If you later change your `BMB_MQTT_LOCAL_PREFIX`, old retained messages under the previous prefix will remain in your broker until you remove them manually (see above).
 
 ## Local development
 

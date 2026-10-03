@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class LivenessTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('docker'), 'Compose unavailable')
     def test_compose_heartbeat_and_process_check(self):
-        env = dict(os.environ, BMW_CLIENT_ID='test-client', BMW_GCID='test-BMW_GCID')
+        env = dict(os.environ, BMB_BMW_CLIENT_ID='test-client', BMB_BMW_GCID='test-BMB_BMW_GCID')
         result = subprocess.run(['docker', 'compose', '--env-file', '.env.sample',
                                  '-f', 'docker-compose.example.yml', 'config', '--format', 'json'], cwd=ROOT, env=env,
                                 text=True, capture_output=True, check=True)
@@ -33,8 +33,8 @@ class LivenessTests(unittest.TestCase):
             process_exe = base / 'proc-exe'
             process_exe.symlink_to(binary)
             heartbeat = base / 'heartbeat'
-            env.update(BMW_HEARTBEAT_FILE=str(heartbeat),
-                       HEALTH_MQTT_DISCONNECT_TIMEOUT='120',
+            env.update(BMB_BMW_HEARTBEAT_FILE=str(heartbeat),
+                       BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT='120',
                        TEST_PROC_EXE=str(process_exe), TEST_BINARY=str(binary))
             def check():
                 return subprocess.run(['sh', '-c', command], env=env,
@@ -66,22 +66,22 @@ class LivenessTests(unittest.TestCase):
             heartbeat.write_text(f'{int(time.time())} 1 0 0\n')
             default_command = command.replace('/tmp/bmw-mqtt-bridge-heartbeat', str(heartbeat))
             default_env = dict(env)
-            default_env.pop('BMW_HEARTBEAT_FILE', None)
+            default_env.pop('BMB_BMW_HEARTBEAT_FILE', None)
             result = subprocess.run(['sh', '-c', default_command], env=default_env,
                                     capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            default_env['BMW_HEARTBEAT_FILE'] = str(base / 'missing-override')
+            default_env['BMB_BMW_HEARTBEAT_FILE'] = str(base / 'missing-override')
             result = subprocess.run(['sh', '-c', default_command], env=default_env,
                                     capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             heartbeat.unlink()
             self.assertNotEqual(check(), 0)
             heartbeat.write_text(f'{int(time.time())} 1 120 0\n')
-            env['HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '180'
+            env['BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '180'
             self.assertEqual(check(), 0)
-            env['HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '0'
+            env['BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '0'
             self.assertNotEqual(check(), 0)
-            env['HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '120'
+            env['BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT'] = '120'
             heartbeat.write_text(f'{int(time.time())} 1 0 0\n')
             process_exe.unlink()
             process_exe.touch()  # A different executable must fail even if fresh.

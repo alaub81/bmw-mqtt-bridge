@@ -40,8 +40,8 @@
 #   - bash, curl, jq, openssl
 #
 # Behavior:
-#   - Read BMW_CLIENT_ID and BMW_GCID exclusively from the container environment.
-#   - Save tokens in BMW_TOKEN_DIR (default: /app/token).
+#   - Read BMB_BMW_CLIENT_ID and BMB_BMW_GCID exclusively from the container environment.
+#   - Save tokens in BMB_BMW_TOKEN_DIR (default: /app/token).
 #   - Validate the complete token response before atomically replacing each file.
 #
 # Outputs (permissions 0600):
@@ -65,10 +65,10 @@ set -euo pipefail
 umask 077
 
 # Internal container path; no configuration file is loaded or generated.
-OUT_DIR="${BMW_TOKEN_DIR:-/app/token}"
+OUT_DIR="${BMB_BMW_TOKEN_DIR:-/app/token}"
 
 # Validate credentials before creating files or performing network requests.
-for key in BMW_CLIENT_ID BMW_GCID; do
+for key in BMB_BMW_CLIENT_ID BMB_BMW_GCID; do
   value="${!key:-}"
   if [[ -z "$value" || "$value" == "11111111-1111-1111-1111-111111111111" ]]; then
     echo "${key} is missing or a placeholder in the container environment." >&2
@@ -101,7 +101,7 @@ echo "1) Requesting device code…"
 RESP="$(curl -sS \
   -H "Accept: application/json" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode client_id="$BMW_CLIENT_ID" \
+  --data-urlencode client_id="$BMB_BMW_CLIENT_ID" \
   --data-urlencode scope="$SCOPES" \
   --data-urlencode code_challenge="$CODE_CHALLENGE" \
   --data-urlencode code_challenge_method="S256" \
@@ -138,7 +138,7 @@ while (( LEFT > 0 )); do
     -H "Content-Type: application/x-www-form-urlencoded" \
     --data-urlencode grant_type="urn:ietf:params:oauth:grant-type:device_code" \
     --data-urlencode device_code="$DEVICE_CODE" \
-    --data-urlencode client_id="$BMW_CLIENT_ID" \
+    --data-urlencode client_id="$BMB_BMW_CLIENT_ID" \
     --data-urlencode code_verifier="$CODE_VERIFIER" \
     "$TOKEN_ENDPOINT")"
 

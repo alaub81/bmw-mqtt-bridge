@@ -40,7 +40,7 @@ static std::condition_variable g_shutdown_condition;
 static int g_shutdown_mid = 0;
 static bool g_shutdown_acknowledged = false;
 static std::string MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
-static int BMW_STATUS_STABLE_DELAY = 0;
+static int BMB_BMW_STATUS_STABLE_DELAY = 0;
 constexpr int MOSQ_ERR_SUCCESS = 0;
 static int publish_count = 0, publish_result = 0;
 static json payload;
@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
         assert(publish_count == 1);
     } else if (scenario == "shutdown") {
         on_local_connect(&client, nullptr, 0);
-        BMW_STATUS_STABLE_DELAY = 3600;
+        BMB_BMW_STATUS_STABLE_DELAY = 3600;
         assert(publish_shutdown_status());
         acknowledgement.join();
         assert(publish_count == 2 && last_qos == 1);

@@ -43,11 +43,11 @@ COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 
 
 # Default environment
-ENV BMW_HOST=customer.streaming-cardata.bmwgroup.com \
-    BMW_PORT=9000 \
-    MQTT_LOCAL_HOST=host.docker.internal \
-    MQTT_LOCAL_PORT=1883 \
-    MQTT_LOCAL_PREFIX=bmw/
+ENV BMB_BMW_HOST=customer.streaming-cardata.bmwgroup.com \
+    BMB_BMW_PORT=9000 \
+    BMB_MQTT_LOCAL_HOST=host.docker.internal \
+    BMB_MQTT_LOCAL_PORT=1883 \
+    BMB_MQTT_LOCAL_PREFIX=bmw/
 
 # Persist token state
 VOLUME ["/app/token"]

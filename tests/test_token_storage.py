@@ -47,8 +47,8 @@ esac
         response_path = self.base / 'response.json'
         response_path.write_text(json.dumps(self.tokens) if response is None else response)
         env = dict(os.environ, PATH=f'{self.mock_bin}:{os.environ["PATH"]}',
-                   BMW_CLIENT_ID='test-client', BMW_GCID='test-account',
-                   BMW_TOKEN_DIR=str(self.state), TEST_TOKEN_RESPONSE=str(response_path))
+                   BMB_BMW_CLIENT_ID='test-client', BMB_BMW_GCID='test-account',
+                   BMB_BMW_TOKEN_DIR=str(self.state), TEST_TOKEN_RESPONSE=str(response_path))
         env.update(overrides)
         return subprocess.run(
             ['bash', '-c', 'umask 000; exec bash "$1"', '_', str(ROOT / 'resources/bmw_flow.sh')],

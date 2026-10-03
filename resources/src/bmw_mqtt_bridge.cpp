@@ -41,22 +41,22 @@
 // Built in the Docker builder stage using resources/compile.sh.
 //
 // Runtime configuration (env overrides):
-//   BMW_CLIENT_ID         : BMW CarData client ID (GUID)              (required; no default)
-//   BMW_GCID              : BMW GCID / username for the MQTT broker   (required; no default)
-//   BMW_HOST              : customer.streaming-cardata.bmwgroup.com   (default: set)
-//   BMW_PORT              : 9000                                      (default: 9000)
-//   MQTT_LOCAL_HOST       : host.docker.internal                      (default: host.docker.internal)
-//   MQTT_LOCAL_PORT       : 1883                                      (default: 1883)
-//   MQTT_LOCAL_PREFIX     : bmw/                                      (default: bmw/)
-//   MQTT_LOCAL_CLIENT_ID  : local MQTT client ID (empty = generated ID)
-//   MQTT_LOCAL_USER       : (optional)
-//   MQTT_LOCAL_PASSWORD   : (optional)
-//   MQTT_LOCAL_TLS        : true/false (default false); encrypt local MQTT
-//   MQTT_LOCAL_TLS_VERIFY : true/false (default true); verify certificate chain and hostname
-//   MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
-//   MQTT_RETAIN           : 0/1 (default 0; status is always retained)
-//   MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
-//   BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
+//   BMB_BMW_CLIENT_ID         : BMW CarData client ID (GUID)              (required; no default)
+//   BMB_BMW_GCID              : BMW GCID / username for the MQTT broker   (required; no default)
+//   BMB_BMW_HOST              : customer.streaming-cardata.bmwgroup.com   (default: set)
+//   BMB_BMW_PORT              : 9000                                      (default: 9000)
+//   BMB_MQTT_LOCAL_HOST       : host.docker.internal                      (default: host.docker.internal)
+//   BMB_MQTT_LOCAL_PORT       : 1883                                      (default: 1883)
+//   BMB_MQTT_LOCAL_PREFIX     : bmw/                                      (default: bmw/)
+//   BMB_MQTT_LOCAL_CLIENT_ID  : local MQTT client ID (empty = generated ID)
+//   BMB_MQTT_LOCAL_USER       : (optional)
+//   BMB_MQTT_LOCAL_PASSWORD   : (optional)
+//   BMB_MQTT_LOCAL_TLS        : true/false (default false); encrypt local MQTT
+//   BMB_MQTT_LOCAL_TLS_VERIFY : true/false (default true); verify certificate chain and hostname
+//   BMB_MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
+//   BMB_MQTT_RETAIN           : 0/1 (default 0; status is always retained)
+//   BMB_MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
+//   BMB_BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
 //
 //
 // Notes:
@@ -125,22 +125,22 @@ static bool env_switch(const char* key, bool default_value) {
     throw std::invalid_argument(std::string(key) + " must be true or false");
 }
 // ===================== Configuration =====================
-static std::string BMW_CLIENT_ID;
-static std::string BMW_GCID;
-static std::string BMW_HOST;
-static int         BMW_PORT;
-static std::string MQTT_LOCAL_HOST;
-static int         MQTT_LOCAL_PORT;
-static std::string MQTT_LOCAL_PREFIX;
-static std::string MQTT_LOCAL_CLIENT_ID;
-static std::string MQTT_LOCAL_USER;
-static std::string MQTT_LOCAL_PASSWORD;
+static std::string BMB_BMW_CLIENT_ID;
+static std::string BMB_BMW_GCID;
+static std::string BMB_BMW_HOST;
+static int         BMB_BMW_PORT;
+static std::string BMB_MQTT_LOCAL_HOST;
+static int         BMB_MQTT_LOCAL_PORT;
+static std::string BMB_MQTT_LOCAL_PREFIX;
+static std::string BMB_MQTT_LOCAL_CLIENT_ID;
+static std::string BMB_MQTT_LOCAL_USER;
+static std::string BMB_MQTT_LOCAL_PASSWORD;
 static std::string MQTT_LOCAL_STATUS_TOPIC;
-static int         MQTT_SPLIT_TOPICS = 0;
-static int         BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
+static int         BMB_MQTT_SPLIT_TOPICS = 0;
+static int         BMB_BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
 static std::string ID_TOKEN_FILE;
 static std::string REFRESH_TOKEN_FILE;
-static int         MQTT_RETAIN = 0; // 0 = no retain (default), 1 = retain
+static int         BMB_MQTT_RETAIN = 0; // 0 = no retain (default), 1 = retain
 
 // ===================== Globals =====================
 static std::atomic<bool> g_stop{false};
@@ -165,13 +165,13 @@ static std::atomic<bool> g_bmw_reconnect_pending{false}; // library reconnect pa
 static std::mt19937 rng{std::random_device{}()};
 
 // ===================== Helpers =====================
-// MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.
+// BMB_MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.
 // Configure only the local client; BMW always retains its existing TLS policy.
 static bool configure_local_tls(mosquitto* client) {
     try {
-        if (!env_switch("MQTT_LOCAL_TLS", false)) return true;
-        const bool verify = env_switch("MQTT_LOCAL_TLS_VERIFY", true);
-        const std::string ca_file = env_str("MQTT_LOCAL_TLS_CA_FILE",
+        if (!env_switch("BMB_MQTT_LOCAL_TLS", false)) return true;
+        const bool verify = env_switch("BMB_MQTT_LOCAL_TLS_VERIFY", true);
+        const std::string ca_file = env_str("BMB_MQTT_LOCAL_TLS_CA_FILE",
                                            "/etc/ssl/certs/ca-certificates.crt");
         int rc = mosquitto_tls_set(client, ca_file.c_str(), nullptr,
                                    nullptr, nullptr, nullptr);
@@ -198,7 +198,7 @@ static bool configure_local_tls(mosquitto* client) {
 
 // Internal container paths shared with Compose and the authentication helper.
 static std::string token_dir() {
-    return env_str("BMW_TOKEN_DIR", "/app/token");
+    return env_str("BMB_BMW_TOKEN_DIR", "/app/token");
 }
 
 // Health telemetry: main-loop liveness and continuous MQTT downtime.
@@ -274,7 +274,7 @@ static bool bmw_full_reconnect(){
         std::cerr << "[bridge] BMW client rebuild failed\n";
         return false;
     }
-    int rc = mosquitto_connect_async(g_bmw, BMW_HOST.c_str(), BMW_PORT, 30);
+    int rc = mosquitto_connect_async(g_bmw, BMB_BMW_HOST.c_str(), BMB_BMW_PORT, 30);
     if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(g_bmw);
     std::cerr << "[bridge] BMW rebuild+connect rc=" << rc
               << " (" << mosquitto_strerror(rc) << ")\n";
@@ -348,7 +348,7 @@ static void publish_status(std::chrono::steady_clock::time_point status_now = st
     }
 
     // connected == false
-    if (BMW_STATUS_STABLE_DELAY == 0) {
+    if (BMB_BMW_STATUS_STABLE_DELAY == 0) {
         if (!initialized || last_published != false || refresh_due) {
             do_publish(false); // Report a disconnect immediately.
         }
@@ -357,7 +357,7 @@ static void publish_status(std::chrono::steady_clock::time_point status_now = st
     }
     long now = time(nullptr);
     if (disconnected_since == 0) { disconnected_since = now; return; }
-    if ((now - disconnected_since) >= BMW_STATUS_STABLE_DELAY && (!initialized || last_published != false || refresh_due)) {
+    if ((now - disconnected_since) >= BMB_BMW_STATUS_STABLE_DELAY && (!initialized || last_published != false || refresh_due)) {
         do_publish(false); // Report a disconnect after the debounce interval.
     }
 }
@@ -503,7 +503,7 @@ static int publish_local(const std::string& topic, const std::string& payload, b
 
 // Local MQTT lifecycle and watchdog; only the main thread creates or retires clients.
 static mosquitto* create_local_client() {
-    mosquitto* client = mosquitto_new(MQTT_LOCAL_CLIENT_ID.empty() ? nullptr : MQTT_LOCAL_CLIENT_ID.c_str(),
+    mosquitto* client = mosquitto_new(BMB_MQTT_LOCAL_CLIENT_ID.empty() ? nullptr : BMB_MQTT_LOCAL_CLIENT_ID.c_str(),
                                      true, nullptr);
     if (!client) return nullptr;
     mosquitto_connect_callback_set(client, on_local_connect);
@@ -515,9 +515,9 @@ static mosquitto* create_local_client() {
     if (rc == MOSQ_ERR_SUCCESS) {
         rc = mosquitto_will_set(client, MQTT_LOCAL_STATUS_TOPIC.c_str(), strlen(lwt), lwt, 0, true);
     }
-    if (rc == MOSQ_ERR_SUCCESS && !MQTT_LOCAL_USER.empty()) {
-        rc = mosquitto_username_pw_set(client, MQTT_LOCAL_USER.c_str(),
-                                       MQTT_LOCAL_PASSWORD.empty() ? nullptr : MQTT_LOCAL_PASSWORD.c_str());
+    if (rc == MOSQ_ERR_SUCCESS && !BMB_MQTT_LOCAL_USER.empty()) {
+        rc = mosquitto_username_pw_set(client, BMB_MQTT_LOCAL_USER.c_str(),
+                                       BMB_MQTT_LOCAL_PASSWORD.empty() ? nullptr : BMB_MQTT_LOCAL_PASSWORD.c_str());
     }
     if (rc != MOSQ_ERR_SUCCESS) {
         std::cerr << "[bridge] local client configuration failed: " << mosquitto_strerror(rc) << '\n';
@@ -559,7 +559,7 @@ static bool restart_local_client() {
         std::lock_guard<std::mutex> lock(g_local_mutex);
         g_local = client;
     }
-    int rc = mosquitto_connect_async(client, MQTT_LOCAL_HOST.c_str(), MQTT_LOCAL_PORT, 30);
+    int rc = mosquitto_connect_async(client, BMB_MQTT_LOCAL_HOST.c_str(), BMB_MQTT_LOCAL_PORT, 30);
     if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(client);
     std::cerr << "[bridge] local MQTT rebuild+connect rc=" << rc
               << " (" << mosquitto_strerror(rc) << ")\n";
@@ -593,7 +593,7 @@ static void on_bmw_connect_v5(struct mosquitto* client, void*, int rc, int flags
 
     if(rc == 0){
         g_connected = true;
-        std::string sub = BMW_GCID + std::string("/+");
+        std::string sub = BMB_BMW_GCID + std::string("/+");
         int mid = 0;
         int s_rc = mosquitto_subscribe(client, &mid, sub.c_str(), 1);
         std::cerr << "[bridge] subscribe '" << sub << "' rc=" << s_rc << " mid=" << mid << "\n";
@@ -625,10 +625,10 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
 
     // Republish both raw and legacy topics.
     auto pos = in_topic.find('/');
-    std::string raw_topic    = MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
-    std::string legacy_topic = MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
+    std::string raw_topic    = BMB_MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
+    std::string legacy_topic = BMB_MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
 
-    bool retain_flag = (MQTT_RETAIN != 0);
+    bool retain_flag = (BMB_MQTT_RETAIN != 0);
     const std::string raw_payload(m->payload ? static_cast<const char*>(m->payload) : "",
                                   m->payload ? static_cast<size_t>(m->payloadlen) : 0);
     int rc1 = publish_local(raw_topic, raw_payload, retain_flag);
@@ -643,7 +643,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
               << "' bytes="<< m->payloadlen << "\n";
 
     // Optionally publish individual data fields.
-    if (!MQTT_SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
+    if (!BMB_MQTT_SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
         return;
 
     try {
@@ -668,7 +668,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
         if (j.contains("data") && j["data"].is_object()) {
             for (auto& [propName, propObj] : j["data"].items()) {
                 if (propObj.contains("value")) {
-                    std::string topic = MQTT_LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
+                    std::string topic = BMB_MQTT_LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
                     std::string val = propObj.dump();
                     int rc = publish_local(topic, val, retain_flag);
                     std::cerr << "[bridge] split '" << topic << "' val=" << val << " rc=" << rc << "\n";
@@ -721,7 +721,7 @@ static void on_bmw_suback(struct mosquitto* /*mosq*/, void* /*userdata*/,
 // ===================== BMW client factory =====================
 
 static mosquitto* create_bmw_client() {
-    mosquitto* m = mosquitto_new(BMW_CLIENT_ID.c_str(), true, nullptr);
+    mosquitto* m = mosquitto_new(BMB_BMW_CLIENT_ID.c_str(), true, nullptr);
     if(!m) return nullptr;
 
     int rc = mosquitto_int_option(m, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
@@ -737,7 +737,7 @@ static mosquitto* create_bmw_client() {
         rc = mosquitto_tls_set(m, "/etc/ssl/certs/ca-certificates.crt",
                               nullptr, nullptr, nullptr, nullptr);
     }
-    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_username_pw_set(m, BMW_GCID.c_str(), g_id_token.c_str());
+    if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_username_pw_set(m, BMB_BMW_GCID.c_str(), g_id_token.c_str());
     if (rc != MOSQ_ERR_SUCCESS) {
         std::cerr << "[bridge] BMW client configuration failed: " << mosquitto_strerror(rc) << '\n';
         mosquitto_destroy(m);
@@ -757,50 +757,50 @@ int main() try {
 
     // Configuration comes exclusively from the container process environment.
     const std::string TDIR = token_dir();
-    const std::string heartbeat_path = env_str("BMW_HEARTBEAT_FILE", "/tmp/bmw-mqtt-bridge-heartbeat");
+    const std::string heartbeat_path = env_str("BMB_BMW_HEARTBEAT_FILE", "/tmp/bmw-mqtt-bridge-heartbeat");
     // Do not reuse a heartbeat from a previous run of this container.
     if (!heartbeat_path.empty()) std::remove(heartbeat_path.c_str());
 
     // initialize
-    BMW_CLIENT_ID         = env_str("BMW_CLIENT_ID",        "");
-    BMW_GCID              = env_str("BMW_GCID",             "");
-    BMW_HOST              = env_str("BMW_HOST",          "customer.streaming-cardata.bmwgroup.com");
-    BMW_PORT              = env_int("BMW_PORT",            9000);
-    MQTT_LOCAL_HOST       = env_str("MQTT_LOCAL_HOST",   "host.docker.internal");
-    MQTT_LOCAL_PORT       = env_int("MQTT_LOCAL_PORT",     1883);
-    MQTT_LOCAL_PREFIX     = env_str("MQTT_LOCAL_PREFIX", "bmw/");
-    MQTT_LOCAL_CLIENT_ID  = env_str("MQTT_LOCAL_CLIENT_ID",  "");
-    MQTT_LOCAL_USER       = env_str("MQTT_LOCAL_USER",       "");
-    MQTT_LOCAL_PASSWORD   = env_str("MQTT_LOCAL_PASSWORD",   "");
-    MQTT_SPLIT_TOPICS     = env_int("MQTT_SPLIT_TOPICS",      0);
-    MQTT_RETAIN           = env_int("MQTT_RETAIN",            0);
-    if (BMW_PORT < 1 || BMW_PORT > 65535 || MQTT_LOCAL_PORT < 1 || MQTT_LOCAL_PORT > 65535) {
-        throw std::invalid_argument("BMW_PORT and MQTT_LOCAL_PORT must be between 1 and 65535");
+    BMB_BMW_CLIENT_ID         = env_str("BMB_BMW_CLIENT_ID",        "");
+    BMB_BMW_GCID              = env_str("BMB_BMW_GCID",             "");
+    BMB_BMW_HOST              = env_str("BMB_BMW_HOST",          "customer.streaming-cardata.bmwgroup.com");
+    BMB_BMW_PORT              = env_int("BMB_BMW_PORT",            9000);
+    BMB_MQTT_LOCAL_HOST       = env_str("BMB_MQTT_LOCAL_HOST",   "host.docker.internal");
+    BMB_MQTT_LOCAL_PORT       = env_int("BMB_MQTT_LOCAL_PORT",     1883);
+    BMB_MQTT_LOCAL_PREFIX     = env_str("BMB_MQTT_LOCAL_PREFIX", "bmw/");
+    BMB_MQTT_LOCAL_CLIENT_ID  = env_str("BMB_MQTT_LOCAL_CLIENT_ID",  "");
+    BMB_MQTT_LOCAL_USER       = env_str("BMB_MQTT_LOCAL_USER",       "");
+    BMB_MQTT_LOCAL_PASSWORD   = env_str("BMB_MQTT_LOCAL_PASSWORD",   "");
+    BMB_MQTT_SPLIT_TOPICS     = env_int("BMB_MQTT_SPLIT_TOPICS",      0);
+    BMB_MQTT_RETAIN           = env_int("BMB_MQTT_RETAIN",            0);
+    if (BMB_BMW_PORT < 1 || BMB_BMW_PORT > 65535 || BMB_MQTT_LOCAL_PORT < 1 || BMB_MQTT_LOCAL_PORT > 65535) {
+        throw std::invalid_argument("BMB_BMW_PORT and BMB_MQTT_LOCAL_PORT must be between 1 and 65535");
     }
-    if ((MQTT_SPLIT_TOPICS != 0 && MQTT_SPLIT_TOPICS != 1) || (MQTT_RETAIN != 0 && MQTT_RETAIN != 1)) {
-        throw std::invalid_argument("MQTT_SPLIT_TOPICS and MQTT_RETAIN must be 0 or 1");
+    if ((BMB_MQTT_SPLIT_TOPICS != 0 && BMB_MQTT_SPLIT_TOPICS != 1) || (BMB_MQTT_RETAIN != 0 && BMB_MQTT_RETAIN != 1)) {
+        throw std::invalid_argument("BMB_MQTT_SPLIT_TOPICS and BMB_MQTT_RETAIN must be 0 or 1");
     }
-    if (MQTT_LOCAL_PREFIX.find_first_of("+#") != std::string::npos) {
-        throw std::invalid_argument("MQTT_LOCAL_PREFIX must not contain MQTT wildcards (+ or #)");
+    if (BMB_MQTT_LOCAL_PREFIX.find_first_of("+#") != std::string::npos) {
+        throw std::invalid_argument("BMB_MQTT_LOCAL_PREFIX must not contain MQTT wildcards (+ or #)");
     }
 
     // fixed token files (no env overrides)
     ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token.txt").string();
     REFRESH_TOKEN_FILE  = (std::filesystem::path(TDIR) / "refresh_token.txt").string();
     // Normalize the topic prefix and apply its default.
-    if (MQTT_LOCAL_PREFIX.empty()) {
-        MQTT_LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
+    if (BMB_MQTT_LOCAL_PREFIX.empty()) {
+        BMB_MQTT_LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
     }
-    if (MQTT_LOCAL_PREFIX.back() != '/') {
-        MQTT_LOCAL_PREFIX.push_back('/');       // just for protection
+    if (BMB_MQTT_LOCAL_PREFIX.back() != '/') {
+        BMB_MQTT_LOCAL_PREFIX.push_back('/');       // just for protection
     }
-    MQTT_LOCAL_STATUS_TOPIC = MQTT_LOCAL_PREFIX + "status";
+    MQTT_LOCAL_STATUS_TOPIC = BMB_MQTT_LOCAL_PREFIX + "status";
     std::cerr << "[bridge] using status topic: " << MQTT_LOCAL_STATUS_TOPIC << "\n";
 
-    BMW_STATUS_STABLE_DELAY = env_int("BMW_STATUS_STABLE_DELAY", 5);
-    if (BMW_STATUS_STABLE_DELAY < 0) BMW_STATUS_STABLE_DELAY = 0;
-    if (BMW_STATUS_STABLE_DELAY > 3600) BMW_STATUS_STABLE_DELAY = 3600;
-    std::cerr << "[bridge] status delay: " << BMW_STATUS_STABLE_DELAY << "s\n";
+    BMB_BMW_STATUS_STABLE_DELAY = env_int("BMB_BMW_STATUS_STABLE_DELAY", 5);
+    if (BMB_BMW_STATUS_STABLE_DELAY < 0) BMB_BMW_STATUS_STABLE_DELAY = 0;
+    if (BMB_BMW_STATUS_STABLE_DELAY > 3600) BMB_BMW_STATUS_STABLE_DELAY = 3600;
+    std::cerr << "[bridge] status delay: " << BMB_BMW_STATUS_STABLE_DELAY << "s\n";
 
 
     // ensure token directory exists
@@ -811,12 +811,12 @@ int main() try {
     }
 
     // validate required IDs (no defaults; reject placeholders)
-    if (is_placeholder_uuid(BMW_CLIENT_ID)) {
-        std::cerr << "✖ BMW_CLIENT_ID missing or placeholder in container environment\n";
+    if (is_placeholder_uuid(BMB_BMW_CLIENT_ID)) {
+        std::cerr << "✖ BMB_BMW_CLIENT_ID missing or placeholder in container environment\n";
         return 1;
     }
-    if (is_placeholder_uuid(BMW_GCID)) {
-        std::cerr << "✖ BMW_GCID missing or placeholder in container environment\n";
+    if (is_placeholder_uuid(BMB_BMW_GCID)) {
+        std::cerr << "✖ BMB_BMW_GCID missing or placeholder in container environment\n";
         return 1;
     }
 
@@ -1073,7 +1073,7 @@ static bool refresh_tokens() {
     const std::string body = build_form_body({
         {"grant_type",   "refresh_token"},
         {"refresh_token",cur_refresh},
-        {"client_id",    BMW_CLIENT_ID}
+        {"client_id",    BMB_BMW_CLIENT_ID}
     });
 
     // HTTP Request via libcurl
