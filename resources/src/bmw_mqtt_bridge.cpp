@@ -159,7 +159,8 @@ static std::mutex g_shutdown_mutex;
 static std::condition_variable g_shutdown_condition;
 static int g_shutdown_mid = 0;
 static bool g_shutdown_acknowledged = false;
-static std::atomic<long> g_next_connect_after{0}; // backoff fence for (re)connects
+static std::atomic<long long> g_next_connect_after{0}; // monotonic milliseconds
+static std::atomic<bool> g_bmw_reconnect_pending{false}; // library reconnect paused by BMW
 
 static std::mt19937 rng{std::random_device{}()};
 
@@ -224,8 +225,40 @@ static bool is_placeholder_uuid(const std::string& v){
     return v.empty() || std::regex_match(v, all_ones);
 }
 
-// Rebuild after a stalled loop or token rotation; called only by the main thread.
+static long long bmw_clock_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
+
+static bool bmw_backoff_active() {
+    return bmw_clock_ms() < g_next_connect_after.load();
+}
+
+// Concurrent errors may extend a pause, but must never shorten it.
+static void extend_bmw_backoff(long seconds) {
+    const long long deadline = bmw_clock_ms() + seconds * 1000LL;
+    long long current = g_next_connect_after.load();
+    while (current < deadline && !g_next_connect_after.compare_exchange_weak(current, deadline)) {}
+}
+
+static void pause_bmw_reconnect(mosquitto* client, int reason) {
+    long delay = 5;
+    if (reason == 151) delay = 60; // Quota exceeded
+    if (reason == 128 || reason == 136 || reason == 137) delay = 20; // Unspecified/unavailable/busy
+    if (reason == 135) delay = 30; // Not authorized
+    extend_bmw_backoff(delay);
+    g_bmw_reconnect_pending = true;
+    // Safe from callbacks: request disconnect, but leave joining/destruction to the main thread.
+    // This also suppresses automatic reconnects when the server already closed the socket.
+    const int rc = mosquitto_disconnect(client);
+    if (rc != MOSQ_ERR_SUCCESS && rc != MOSQ_ERR_NO_CONN) {
+        std::cerr << "[bridge] BMW disconnect request failed: " << mosquitto_strerror(rc) << '\n';
+    }
+    std::cerr << "[bridge] BMW reconnect paused for at least " << delay << "s; reason=" << reason << '\n';
+}
+
+// Rebuild after a stalled loop, BMW backoff or token rotation; main thread only.
 static bool bmw_full_reconnect(){
+    if (g_stop || bmw_backoff_active()) return false;
     if (g_bmw) {
         mosquitto_loop_stop(g_bmw, true);
         mosquitto_destroy(g_bmw);
@@ -233,6 +266,9 @@ static bool bmw_full_reconnect(){
     }
     // Old callbacks have finished; they cannot restore a stale connected state.
     g_connected = false;
+    // A callback may have extended the pause while the old thread was being joined.
+    if (g_stop || bmw_backoff_active()) return false;
+    g_bmw_reconnect_pending = false;
     g_bmw = create_bmw_client();
     if (!g_bmw) {
         std::cerr << "[bridge] BMW client rebuild failed\n";
@@ -256,11 +292,13 @@ static void check_bmw_connection(std::chrono::steady_clock::time_point now) {
         last_connected = now;
         return;
     }
-    if (g_stop || now - last_connected < std::chrono::seconds(30) ||
-        time(nullptr) < g_next_connect_after.load()) return;
+    if (g_stop || bmw_backoff_active()) return;
+    const bool pending = g_bmw_reconnect_pending.load();
+    if (!pending && now - last_connected < std::chrono::seconds(30)) return;
     // Retry even if DNS/TLS failed before CONNECT or the network loop has ended.
     last_connected = now;
-    std::cerr << "[bridge] BMW MQTT disconnected for 30s; rebuilding client\n";
+    std::cerr << (pending ? "[bridge] BMW backoff elapsed; rebuilding client\n"
+                         : "[bridge] BMW MQTT disconnected for 30s; rebuilding client\n");
     bmw_full_reconnect();
 }
 
@@ -561,33 +599,23 @@ static void on_bmw_connect_v5(struct mosquitto* client, void*, int rc, int flags
         std::cerr << "[bridge] subscribe '" << sub << "' rc=" << s_rc << " mid=" << mid << "\n";
         publish_status();
         g_next_connect_after = 0;
+        g_bmw_reconnect_pending = false;
         return;
     }
 
-    // failed → set backoff
-    long now = time(nullptr);
-    long delay = 5; // default
-    if (rc == 151) delay = 60;              // Quota exceeded
-    if (rc == 128 || rc == 136 || rc == 137) delay = 20; // Unspecified / Server unavailable / Server busy
-    if (rc == 135) delay = 30;              // Not authorized
-
-    g_next_connect_after = now + delay;
     g_connected = false;
+    pause_bmw_reconnect(client, rc);
     publish_status();
 }
 
-static void on_bmw_disconnect(struct mosquitto*, void*, int rc){
-    std::cout << "[bridge] BMW disconnect rc=" << rc << "\n";
-    g_connected = false;
-    publish_status();
-}
-
-static void on_bmw_disconnect_v5(struct mosquitto*, void*, int rc,
+static void on_bmw_disconnect_v5(struct mosquitto* client, void*, int rc,
                                  const mosquitto_property* /*props*/){
     const char* reason = mosquitto_reason_string(rc);
     std::cerr << "[bridge] BMW disconnect_v5 rc=" << rc
               << " (" << (reason ? reason : "unknown") << ")\n";
     g_connected = false;
+    // MQTT v5 server errors use reason codes >= 128; ordinary transport errors do not.
+    if (rc >= 128 && !g_stop) pause_bmw_reconnect(client, rc);
     publish_status();
 }
 
@@ -675,8 +703,7 @@ static void on_bmw_log(struct mosquitto* /*mosq*/, void* /*userdata*/,
     {
         g_connected = false;
         publish_status();
-        long now = time(nullptr);
-        g_next_connect_after = now + 5;
+        extend_bmw_backoff(5);
     }
 
     std::cerr << "[bmw/log] level=" << level << " " << str << "\n";
@@ -701,7 +728,6 @@ static mosquitto* create_bmw_client() {
     if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_reconnect_delay_set(m, 1, 10, true);
 
     mosquitto_connect_v5_callback_set(m, on_bmw_connect_v5);
-    mosquitto_disconnect_callback_set(m, on_bmw_disconnect);
     mosquitto_disconnect_v5_callback_set(m, on_bmw_disconnect_v5);
     mosquitto_message_callback_set(m, on_bmw_message);
     mosquitto_log_callback_set(m, on_bmw_log);
@@ -881,7 +907,7 @@ int main() try {
         publish_status();
 
         // 0) Backoff window active? → do not trigger new actions
-        if (now < g_next_connect_after.load()) continue;
+        if (bmw_backoff_active()) continue;
 
         bool due_soft = needs_soft_refresh(now);
         bool due_hard = needs_hard_refresh(now);
@@ -902,14 +928,14 @@ int main() try {
 
                 // Pause briefly before reconnecting with the new token.
                 long delay_ms = 1500 + (rng()%500);
-                g_next_connect_after = time(nullptr) + 1; // Brief reconnect backoff.
+                extend_bmw_backoff(1);
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
 
                 // Rebuild after joining the old thread to replace credentials safely.
                 bmw_full_reconnect();
             } else {
                 last_refresh_attempt = now;
-                g_next_connect_after = now + 15;
+                extend_bmw_backoff(15);
                 std::cerr << "[bridge] refresh failed, retry soon\n";
             }
         }

@@ -455,12 +455,27 @@ checked; failed replacements are retried after another 30 seconds. A successful
 CONNACK subscribes to the BMW topics again and publishes the current status.
 
 The watchdog starts timing after the application detects a disconnect; MQTT
-keepalive or TCP failure detection can take additional time. BMW server-error
-backoff postpones watchdog rebuilds and token refresh attempts. Libmosquitto's
-automatic reconnects use their separate 1-to-10-second delay and do not consult
-that backoff fence. Token refresh and other
-blocking main-loop work can delay checks. Downtime used by the healthcheck is
-not reset by a rebuild; it resets only after a successful connection.
+keepalive or TCP failure detection can take additional time. Ordinary transport
+disconnects retain libmosquitto's automatic reconnects with a 1-to-10-second delay.
+When BMW rejects CONNECT or sends an error DISCONNECT, the callback requests a
+disconnect to suppress library reconnects. The main loop recreates the client
+only after the shared backoff expires, without an additional 30-second wait:
+
+| BMW reason | Minimum pause |
+| --- | --- |
+| Quota exceeded (`151`) | 60 seconds |
+| Not authorized (`135`) | 30 seconds |
+| Unspecified error, server unavailable or busy (`128`, `136`, `137`) | 20 seconds |
+| Other CONNECT rejections / error DISCONNECT reasons | 5 seconds |
+
+The shared deadline uses a monotonic clock. Network errors and token refresh
+can extend an existing pause but never shorten it. Rebuilds check the deadline
+again after joining the old network thread, so a late callback cannot bypass
+the pause. A successful CONNACK clears the backoff. Token refresh attempts also
+wait while backoff is active; the local broker watchdog and heartbeat continue.
+Blocking token refresh or other main-loop work can delay checks. Downtime used
+by the healthcheck is not reset by a rebuild; it resets only after a successful
+connection.
 
 ### Status Topic Prefix
 
@@ -749,7 +764,8 @@ tests, an empty suite or failed tests return a non-zero exit code.
 The separate CI job **Offline regression tests** invokes exactly
 `./tests/test-check.sh`. These tests validate token handling and legacy-state rejection,
 environment-only configuration, GHCR image selection and shared development settings,
-token response validation, permissions and atomic writes, TLS settings,
+token response validation, permissions and atomic writes, BMW server backoff
+and library reconnect suppression, TLS settings,
 MQTT status and shutdown handling, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
