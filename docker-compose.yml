@@ -18,6 +18,7 @@ services:
       BMB_MQTT_LOCAL_TLS_VERIFY: "${BMB_MQTT_LOCAL_TLS_VERIFY:-true}"
       BMB_MQTT_LOCAL_TLS_CA_FILE: ${BMB_MQTT_LOCAL_TLS_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
       BMB_MQTT_SPLIT_TOPICS: ${BMB_MQTT_SPLIT_TOPICS:-0}
+      BMB_MQTT_HOMIE: ${BMB_MQTT_HOMIE:-0}
       BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
     volumes:
       - data_token:/app/token

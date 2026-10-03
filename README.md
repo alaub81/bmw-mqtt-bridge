@@ -438,6 +438,7 @@ Validation on startup:
 | Variable        | Type | Default | Required | Description |
 |-----------------|------|---------|----------|-------------|
 | `BMB_MQTT_SPLIT_TOPICS`  | int  | `0`     | No       | `0` = disabled, `1` = enabled. When enabled, JSON payloads are parsed and individual fields are republished under `vehicles/<VIN>/<propertyName>`. |
+| `BMB_MQTT_HOMIE` | int | `0` | No | `1` additionally publishes Homie 4 devices and properties under `homie/` for openHAB discovery. Independent of split topics; Homie messages are retained. |
 
 ### 🔁 Retained Messages
 
@@ -474,7 +475,7 @@ reads `BMB_BMW_HEARTBEAT_FILE` automatically. Adding these keys to the host `.en
 alone does not pass them to the container; declare them under `environment`.
 
 Numeric options reject invalid values instead of silently falling back to defaults.
-Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS` and
+Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS`, `BMB_MQTT_HOMIE` and
 `BMB_MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
 
@@ -615,6 +616,60 @@ bmw/vehicles/<VIN>/fuelPercentage {"value":62.5,"unit":"%","timestamp":173979000
 bmw/vehicles/<VIN>/range_km       {"value":420}
 bmw/vehicles/<VIN>/position       {"value":{"lat":48.1,"lon":11.6},"timestamp":1739790100}
 ```
+
+### Homie 4 publishing (openHAB discovery)
+
+Enable the additional Homie output in `.env`:
+
+```ini
+BMB_MQTT_HOMIE=1
+```
+
+The default is `0` (disabled). RAW and Legacy publishing continue as before.
+Homie works with either setting of `BMB_MQTT_SPLIT_TOPICS` and uses Homie **4.0.0**,
+which openHAB supports, rather than Homie 5.
+
+Each VIN becomes a device at `homie/bmw-<lowercase-VIN>`, with a `telemetry` node.
+Each received field under `data` becomes a read-only property: its `$name` is the
+original BMW field name, `$unit` comes from the message, and its value topic contains
+the scalar value rather than the RAW JSON envelope. Property IDs use `p-` followed
+by the hexadecimal UTF-8 bytes of the original field name. This keeps IDs stable
+and avoids collisions between dots, hyphens and upper/lowercase names.
+
+JSON numbers use Homie's `float` datatype, including an initial integer `0`, so a
+later fractional reading works without changing the channel type. Booleans use
+`boolean`; strings use `string`. Objects and arrays are serialized as JSON strings.
+Null, missing and empty string values are ignored. Numeric strings remain strings.
+If a field's type or unit changes, its description is republished.
+
+Newly encountered fields extend the complete `$properties` list and trigger a
+description update (`init`, metadata, values, then `ready`). Fields absent from a
+later partial message remain registered. The complete field registry and last
+values are saved atomically in `/app/token/homie-cache.json` in the existing volume,
+and replayed after a bridge restart or Homie MQTT reconnect. Cached readings may
+be old; `ready` reports connectivity, not freshness of every field.
+
+Homie descriptions and values always use retained QoS 1, independently of
+`BMB_MQTT_RETAIN`. Each vehicle has its own connection to the configured local broker,
+with the same credentials and TLS settings, and a retained `$state=lost` Last Will.
+Connections are rebuilt after 30 seconds of continuous downtime. `$state=alert`
+indicates that the local Homie connection is online but BMW is disconnected.
+Normal shutdown publishes `disconnected`; if it cannot be acknowledged, the
+connection closes without a clean disconnect so the broker can deliver `lost`.
+
+In openHAB, enable the Homie discovery support appropriate to your openHAB version
+and use your existing MQTT Broker Bridge. Adopt each discovered vehicle from the
+Inbox in MainUI; its properties become channels automatically. Link these channels
+to Items in MainUI. No `.things` file or JSONPath transformation is needed.
+See the [openHAB Homie documentation](https://www.openhab.org/addons/bindings/homie/).
+Adding fields to an already adopted Thing should be verified with your installed
+openHAB version; the bridge republishes the entire updated description.
+
+Setting `BMB_MQTT_HOMIE=0` stops Homie publishing but does not delete retained Homie
+topics or the local cache. To remove a device permanently, clear its retained
+`homie/bmw-<VIN>/...` messages in your MQTT client and remove the corresponding
+openHAB Thing. Stop the bridge before editing/deleting the cache, otherwise known
+fields will be restored from it on the next start.
 
 ## MQTT retain
 

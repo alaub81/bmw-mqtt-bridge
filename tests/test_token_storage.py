@@ -139,7 +139,8 @@ exec "$TEST_REAL_JQ" "$@"
     @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
     def test_refresh_writer_restricts_permissions_and_preserves_failed_target(self):
         source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
-        helper = source[source.index('static bool write_file_atomic('):]
+        # Select the definition rather than the forward declaration used by Homie.
+        helper = source[source.rindex('static bool write_file_atomic('):]
         helper = helper.split('static bool refresh_tokens() {')[0]
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

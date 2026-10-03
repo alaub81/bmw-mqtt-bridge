@@ -56,6 +56,7 @@
 //   BMB_MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
 //   BMB_MQTT_RETAIN           : 0/1 (default 0; status is always retained)
 //   BMB_MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
+//   BMB_MQTT_HOMIE            : 0/1  (default: 0; additional Homie 4 devices)
 //   BMB_BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
 //
 //
@@ -137,6 +138,7 @@ static std::string BMB_MQTT_LOCAL_USER;
 static std::string BMB_MQTT_LOCAL_PASSWORD;
 static std::string MQTT_LOCAL_STATUS_TOPIC;
 static int         BMB_MQTT_SPLIT_TOPICS = 0;
+static int         BMB_MQTT_HOMIE = 0;
 static int         BMB_BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
 static std::string ID_TOKEN_FILE;
 static std::string REFRESH_TOKEN_FILE;
@@ -495,6 +497,10 @@ static void on_local_log(struct mosquitto*, void*, int level, const char* messag
 }
 
 // Shared by raw telemetry, split fields and status publishers during client replacement.
+static bool write_file_atomic(const std::string& final_path, const std::string& content);
+#include "homie_publisher.hpp"
+static std::unique_ptr<HomiePublisher> g_homie;
+
 static int publish_local(const std::string& topic, const std::string& payload, bool retain) {
     std::lock_guard<std::mutex> lock(g_local_mutex);
     if (!g_local || !g_local_connected.load()) return MOSQ_ERR_NO_CONN;
@@ -643,7 +649,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
               << "' bytes="<< m->payloadlen << "\n";
 
     // Optionally publish individual data fields.
-    if (!BMB_MQTT_SPLIT_TOPICS || !m->payload || m->payloadlen <= 0)
+    if ((!BMB_MQTT_SPLIT_TOPICS && !BMB_MQTT_HOMIE) || !m->payload || m->payloadlen <= 0)
         return;
 
     try {
@@ -666,8 +672,9 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
             throw std::runtime_error("invalid or missing VIN");
 
         if (j.contains("data") && j["data"].is_object()) {
+            if (g_homie) g_homie->ingest(vin, j["data"]);
             for (auto& [propName, propObj] : j["data"].items()) {
-                if (propObj.contains("value")) {
+                if (BMB_MQTT_SPLIT_TOPICS && propObj.contains("value")) {
                     std::string topic = BMB_MQTT_LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
                     std::string val = propObj.dump();
                     int rc = publish_local(topic, val, retain_flag);
@@ -773,12 +780,16 @@ int main() try {
     BMB_MQTT_LOCAL_USER       = env_str("BMB_MQTT_LOCAL_USER",       "");
     BMB_MQTT_LOCAL_PASSWORD   = env_str("BMB_MQTT_LOCAL_PASSWORD",   "");
     BMB_MQTT_SPLIT_TOPICS     = env_int("BMB_MQTT_SPLIT_TOPICS",      0);
+    BMB_MQTT_HOMIE            = env_int("BMB_MQTT_HOMIE",             0);
     BMB_MQTT_RETAIN           = env_int("BMB_MQTT_RETAIN",            0);
     if (BMB_BMW_PORT < 1 || BMB_BMW_PORT > 65535 || BMB_MQTT_LOCAL_PORT < 1 || BMB_MQTT_LOCAL_PORT > 65535) {
         throw std::invalid_argument("BMB_BMW_PORT and BMB_MQTT_LOCAL_PORT must be between 1 and 65535");
     }
     if ((BMB_MQTT_SPLIT_TOPICS != 0 && BMB_MQTT_SPLIT_TOPICS != 1) || (BMB_MQTT_RETAIN != 0 && BMB_MQTT_RETAIN != 1)) {
         throw std::invalid_argument("BMB_MQTT_SPLIT_TOPICS and BMB_MQTT_RETAIN must be 0 or 1");
+    }
+    if (BMB_MQTT_HOMIE != 0 && BMB_MQTT_HOMIE != 1) {
+        throw std::invalid_argument("BMB_MQTT_HOMIE must be 0 or 1");
     }
     if (BMB_MQTT_LOCAL_PREFIX.find_first_of("+#") != std::string::npos) {
         throw std::invalid_argument("BMB_MQTT_LOCAL_PREFIX must not contain MQTT wildcards (+ or #)");
@@ -858,6 +869,11 @@ int main() try {
     }
     publish_status();
 
+    if (BMB_MQTT_HOMIE) {
+        g_homie = std::make_unique<HomiePublisher>((std::filesystem::path(TDIR) / "homie-cache.json").string());
+        std::cerr << "[homie] Homie 4 publishing enabled\n";
+    }
+
     // Initial failures remain supervised by the same BMW downtime watchdog.
     bmw_full_reconnect();
     std::cout << "[bridge] running… (Ctrl+C / SIGTERM to stop)\n";
@@ -906,6 +922,8 @@ int main() try {
         check_bmw_connection(heartbeat_now);
         publish_status();
 
+        if (g_homie) g_homie->tick(g_connected.load());
+
         // 0) Backoff window active? → do not trigger new actions
         if (bmw_backoff_active()) continue;
 
@@ -951,6 +969,8 @@ int main() try {
     // A clean disconnect suppresses the Last Will; send offline explicitly first.
     // If delivery fails, close without DISCONNECT so the broker can publish the Will.
     const bool offline_acknowledged = publish_shutdown_status();
+    if (g_homie) g_homie->tick(false); // Persist any final telemetry after joining BMW callbacks.
+    g_homie.reset();
     stop_local_client(offline_acknowledged);
     mosquitto_lib_cleanup();
     curl_global_cleanup();
