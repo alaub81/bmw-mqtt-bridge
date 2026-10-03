@@ -10,4 +10,4 @@ services:
 
 # Top-level resources are not inherited by extends.
 volumes:
-  bmb_data_token:
+  data_bmb_token:

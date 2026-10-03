@@ -148,7 +148,7 @@ class DockerConfigurationTests(unittest.TestCase):
                 self.assertNotIn('BMW_LOAD_ENV_FILE', configured)
                 self.assertNotIn('BMB_BMW_TOKEN_DIR', example_keys)
                 self.assertNotIn('BMB_BMW_HEARTBEAT_FILE', example_keys)
-                volume = next(volume for volume in service['volumes'] if volume['source'] == 'bmb_data_token')
+                volume = next(volume for volume in service['volumes'] if volume['source'] == 'data_bmb_token')
                 self.assertEqual(volume['target'], '/app/token')
                 self.assertNotIn('BMB_BMW_TOKEN_DIR', configured)
                 self.assertNotIn('BMB_BMW_HEARTBEAT_FILE', configured)
