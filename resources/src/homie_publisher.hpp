@@ -3,6 +3,9 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 #include "homie_names.hpp"
 
 // Homie 4 needs one MQTT connection (and therefore one Last Will) per device.
@@ -22,6 +25,7 @@ class HomiePublisher {
         bool dirty = true;
         bool values_dirty = true;
         std::string state;
+        std::string last_update;
         std::chrono::steady_clock::time_point last_online{};
         std::mutex ack_mutex;
         std::condition_variable ack_condition;
@@ -30,9 +34,26 @@ class HomiePublisher {
     };
     std::map<std::string, std::unique_ptr<Device>> devices;
     std::mutex pending_mutex;
-    std::vector<std::pair<std::string, json>> pending;
+    struct Update {
+        std::string vin;
+        json fields;
+        std::string received_at;
+    };
+    std::vector<Update> pending;
     std::string cache_path;
     bool cache_dirty = false;
+
+    static std::string timestamp(std::chrono::system_clock::time_point received_at) {
+        const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(received_at);
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(received_at - seconds).count();
+        const std::time_t time = std::chrono::system_clock::to_time_t(seconds);
+        std::tm utc{};
+        if (!gmtime_r(&time, &utc)) throw std::runtime_error("cannot format Homie receipt timestamp");
+        std::ostringstream out;
+        out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%S") << '.'
+            << std::setfill('0') << std::setw(3) << milliseconds << 'Z';
+        return out.str();
+    }
 
     static std::string legacy_property_id(const std::string& key) {
         // Reversible encoding avoids collisions, including case and punctuation.
@@ -47,7 +68,7 @@ class HomiePublisher {
     static std::string property_id(const Device& d, const std::string& key) {
         for (const auto& [id, p] : d.properties) if (p.name == key) return id;
         const std::string base = homie_names::field_id(key);
-        if (d.properties.count(base) == 0) return base;
+        if (base != "last-update" && d.properties.count(base) == 0) return base;
         std::string id = base + "-" + homie_names::suffix(key);
         // Even an unlikely hash collision must not overwrite another property.
         while (d.properties.count(id) != 0) id += "-x";
@@ -182,10 +203,20 @@ class HomiePublisher {
             // An empty retained payload clears an obsolete optional unit.
             ok &= publish(d, base + "/$unit", p.unit);
         }
+        if (!d.last_update.empty()) {
+            if (!ids.empty()) ids += ',';
+            ids += "last-update";
+            ok &= publish(d, "telemetry/last-update/$name", "Last update");
+            // openHAB's Homie binding supports datetime directly, without a transform.
+            ok &= publish(d, "telemetry/last-update/$datatype", "datetime");
+            ok &= publish(d, "telemetry/last-update/$settable", "false");
+            ok &= publish(d, "telemetry/last-update/$retained", "true");
+            ok &= publish(d, "telemetry/last-update/$unit", "");
+        }
         ok &= publish(d, "telemetry/$properties", ids);
         if (ok) {
             for (const auto& id : d.legacy_ids) {
-                if (d.properties.count(id) != 0) continue;
+                if (id == "last-update" || d.properties.count(id) != 0) continue;
                 const std::string base = "telemetry/" + id;
                 for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
                     ok &= publish(d, base + suffix, "");
@@ -204,6 +235,7 @@ class HomiePublisher {
                 throw std::runtime_error("unsupported cache format");
             // Validate the entire file before installing any cached devices.
             std::map<std::string, std::unique_ptr<Device>> restored;
+            bool migrated_id = false;
             for (const auto& [vin, fields] : cache.at("vehicles").items()) {
                 if (!valid_vin(vin) || !fields.is_object()) throw std::runtime_error("invalid cached vehicle");
                 auto entry = std::make_unique<Device>();
@@ -213,11 +245,17 @@ class HomiePublisher {
                                field.at("unit").get<std::string>(), field.at("value").get<std::string>()};
                     if (name.empty() || (p.datatype != "float" && p.datatype != "boolean" && p.datatype != "string"))
                         throw std::runtime_error("invalid cached property");
-                    const std::string id = version == 1 ? property_id(*entry, name) : field.at("id").get<std::string>();
+                    std::string id = version == 1 ? property_id(*entry, name) : field.at("id").get<std::string>();
+                    if (id == "last-update") {
+                        id = property_id(*entry, name);
+                        migrated_id = true;
+                    }
                     if (!valid_property_id(id) || !entry->properties.emplace(id, std::move(p)).second)
                         throw std::runtime_error("invalid or duplicate cached property ID");
                     if (version == 1) entry->legacy_ids.insert(legacy_property_id(name));
                 }
+                if (cache.contains("last_updates") && cache.at("last_updates").contains(vin))
+                    entry->last_update = cache.at("last_updates").at(vin).get<std::string>();
                 if (version == 2 && cache.contains("legacy_ids") && cache.at("legacy_ids").contains(vin)) {
                     for (const auto& id : cache.at("legacy_ids").at(vin)) {
                         const auto legacy = id.get<std::string>();
@@ -228,7 +266,7 @@ class HomiePublisher {
                 if (!entry->properties.empty()) restored.emplace(vin, std::move(entry));
             }
             devices = std::move(restored);
-            cache_dirty = version == 1;
+            cache_dirty = version == 1 || migrated_id;
             std::cerr << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
             std::cerr << "[homie] cannot load field cache: " << e.what() << '\n';
@@ -238,13 +276,16 @@ class HomiePublisher {
         if (!cache_dirty) return;
         json vehicles = json::object();
         json legacy_ids = json::object();
+        json last_updates = json::object();
         for (const auto& [vin, d] : devices) {
             for (const auto& [id, p] : d->properties) {
                 vehicles[vin][p.name] = {{"id", id}, {"datatype", p.datatype}, {"unit", p.unit}, {"value", p.value}};
             }
             if (!d->legacy_ids.empty()) legacy_ids[vin] = d->legacy_ids;
+            if (!d->last_update.empty()) last_updates[vin] = d->last_update;
         }
-        if (write_file_atomic(cache_path, json{{"version", 2}, {"vehicles", vehicles}, {"legacy_ids", legacy_ids}}.dump())) {
+        if (write_file_atomic(cache_path, json{{"version", 2}, {"vehicles", vehicles},
+                                              {"legacy_ids", legacy_ids}, {"last_updates", last_updates}}.dump())) {
             cache_dirty = false;
         } else {
             std::cerr << "[homie] cannot save field cache\n";
@@ -254,18 +295,20 @@ class HomiePublisher {
 public:
     explicit HomiePublisher(const std::string& path) : cache_path(path) { load(); }
     ~HomiePublisher() { shutdown(); }
-    void ingest(const std::string& vin, const json& fields) {
+    void ingest(const std::string& vin, const json& fields,
+                std::chrono::system_clock::time_point received_at = std::chrono::system_clock::now()) {
         if (!valid_vin(vin) || !fields.is_object()) return;
         std::lock_guard<std::mutex> lock(pending_mutex);
-        pending.emplace_back(vin, fields);
+        pending.push_back({vin, fields, timestamp(received_at)});
     }
     void tick(bool bmw_connected) {
-        std::vector<std::pair<std::string, json>> updates;
+        std::vector<Update> updates;
         {
             std::lock_guard<std::mutex> lock(pending_mutex);
             updates.swap(pending);
         }
-        for (const auto& [vin, fields] : updates) {
+        for (const auto& [vin, fields, received_at] : updates) {
+            bool accepted = false;
             for (const auto& [name, field] : fields.items()) {
                 if (name.empty() || !field.is_object() || !field.contains("value") || field["value"].is_null()) continue;
                 const auto& value = field["value"];
@@ -288,6 +331,12 @@ public:
                 cache_dirty = true;
                 // Values are sent after the schema below, even for first sightings.
                 d.values_dirty = true;
+                accepted = true;
+            }
+            if (accepted) {
+                auto& d = device(vin);
+                if (d.last_update.empty()) d.dirty = true;
+                d.last_update = received_at;
             }
         }
         save();
@@ -311,6 +360,7 @@ public:
                 if (ok) {
                     for (const auto& [id, p] : d.properties)
                         ok &= publish(d, "telemetry/" + id, p.value);
+                    if (!d.last_update.empty()) ok &= publish(d, "telemetry/last-update", d.last_update);
                 }
                 const std::string state = bmw_connected ? "ready" : "alert";
                 if (ok) ok = publish(d, "$state", state);

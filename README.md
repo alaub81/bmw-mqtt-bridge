@@ -644,6 +644,22 @@ complete field path, so new BMW fields do not require a mapping entry. The label
 mapping is maintained in `resources/src/homie_names.hpp`; the cache retains the
 original BMW field name as its key.
 
+Each vehicle also exposes **Last update** at
+`homie/bmw-<lowercase-VIN>/telemetry/last-update`. This is the bridge's UTC receipt
+time of the latest message containing at least one valid, non-empty BMW value,
+for example `2026-10-04T12:00:00.123Z`. Identical readings still count as newly
+received data. Empty/invalid messages, connection status changes, timer ticks,
+restarts and retained-value replays do not advance the timestamp. It is not the
+measurement timestamp supplied by BMW, which can be older than the receipt time.
+
+The timestamp is retained and persisted per VIN in `homie-cache.json`, with the
+same replay behavior as the telemetry values. Existing caches have no receipt
+time until another valid message arrives; the bridge does not invent a timestamp
+when loading old readings. The property uses openHAB's supported `datetime`
+datatype while retaining the Homie 4 discovery structure. Link the discovered
+`telemetry#last-update` channel to a **DateTime** Item in MainUI with the default
+profile. No JSONPath transformation or timestamp-update profile is needed.
+
 Earlier caches with hexadecimal property IDs are migrated automatically to cache
 version 2, preserving their values. The updated description lists the readable IDs
 and clears the old retained property values and metadata. Cleanup records persist

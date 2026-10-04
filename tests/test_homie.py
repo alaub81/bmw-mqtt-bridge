@@ -128,6 +128,43 @@ int main(int argc, char** argv) {
         publisher.ingest(vin, {{"null", {{"value", nullptr}}}, {"empty", {{"value", ""}}}, {"bad", 1}});
         publisher.tick(true);
         assert(clients.empty() && messages.empty());
+    } else if (scenario == "last-update") {
+        const auto first = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
+        publisher.ingest(vin, field, first);
+        publisher.tick(true);
+        assert(latest(base + "telemetry/last-update/$name") == "Last update");
+        assert(latest(base + "telemetry/last-update/$datatype") == "datetime");
+        assert(latest(base + "telemetry/last-update/$settable") == "false");
+        assert(latest(base + "telemetry/last-update/$retained") == "true");
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:00.123Z");
+        assert(latest(base + "telemetry/$properties").find("last-update") != std::string::npos);
+        messages.clear();
+        publisher.tick(true);
+        assert(messages.empty()); // A timer tick is not a BMW update.
+        publisher.ingest(vin, {{"bad", {{"value", nullptr}}}}, first + std::chrono::seconds(1));
+        publisher.tick(true);
+        assert(messages.empty());
+        publisher.ingest(vin, field, first + std::chrono::seconds(2)); // Identical readings still count as receipts.
+        publisher.tick(true);
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        assert(latest(base + "$homie") == "<missing>");
+        publisher.ingest("WBA00000000000001", field, first + std::chrono::seconds(3));
+        publisher.tick(true);
+        assert(latest("homie/bmw-wba00000000000001/telemetry/last-update") == "2026-10-04T12:00:03.123Z");
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        messages.clear();
+        clients[0]->connect_cb(clients[0], clients[0]->context, 0);
+        publisher.tick(true);
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        publisher.ingest(vin, {{"last-update", {{"value", "BMW field"}}}}, first + std::chrono::seconds(4));
+        publisher.tick(true);
+        assert(id("last-update") != "last-update");
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:04.123Z");
+        assert(latest(base + "telemetry/" + id("last-update")) == "BMW field");
+    } else if (scenario == "restore-last-update") {
+        publisher.tick(true);
+        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:04.123Z");
+        assert(latest(base + "telemetry/last-update/$datatype") == "datetime");
     } else if (scenario == "names") {
         const std::string hood = "vehicle.body.hood.isOpen";
         const std::string tire = "vehicle.chassis.axle.row1.wheel.left.tire.pressure";
@@ -265,6 +302,11 @@ int main(int argc, char** argv) {
 
     def test_readable_ids_known_labels_and_unknown_field_fallback(self):
         self.run_scenario('names', self.base / 'names.json')
+
+    def test_last_update_tracks_receipt_per_vehicle_and_survives_restarts(self):
+        cache = self.base / 'last-update.json'
+        self.run_scenario('last-update', cache)
+        self.run_scenario('restore-last-update', cache)
 
     def test_legacy_cache_migrates_values_and_clears_retained_topics(self):
         cache = self.base / 'migration.json'
