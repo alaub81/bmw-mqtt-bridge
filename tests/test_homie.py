@@ -132,12 +132,12 @@ int main(int argc, char** argv) {
         const auto first = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
         publisher.ingest(vin, field, first);
         publisher.tick(true);
-        assert(latest(base + "telemetry/last-update/$name") == "Last update");
-        assert(latest(base + "telemetry/last-update/$datatype") == "datetime");
-        assert(latest(base + "telemetry/last-update/$settable") == "false");
-        assert(latest(base + "telemetry/last-update/$retained") == "true");
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:00.123Z");
-        assert(latest(base + "telemetry/$properties").find("last-update") != std::string::npos);
+        assert(latest(base + "telemetry/lastUpdate/$name") == "Last update");
+        assert(latest(base + "telemetry/lastUpdate/$datatype") == "datetime");
+        assert(latest(base + "telemetry/lastUpdate/$settable") == "false");
+        assert(latest(base + "telemetry/lastUpdate/$retained") == "true");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
+        assert(latest(base + "telemetry/$properties").find("lastUpdate") != std::string::npos);
         messages.clear();
         publisher.tick(true);
         assert(messages.empty()); // A timer tick is not a BMW update.
@@ -146,47 +146,57 @@ int main(int argc, char** argv) {
         assert(messages.empty());
         publisher.ingest(vin, field, first + std::chrono::seconds(2)); // Identical readings still count as receipts.
         publisher.tick(true);
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         assert(latest(base + "$homie") == "<missing>");
         publisher.ingest("WBA00000000000001", field, first + std::chrono::seconds(3));
         publisher.tick(true);
-        assert(latest("homie/bmw-wba00000000000001/telemetry/last-update") == "2026-10-04T12:00:03.123Z");
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        assert(latest("homie/bmw-wba00000000000001/telemetry/lastUpdate") == "2026-10-04T12:00:03.123Z");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         messages.clear();
         clients[0]->connect_cb(clients[0], clients[0]->context, 0);
         publisher.tick(true);
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:02.123Z");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         publisher.ingest(vin, {{"last-update", {{"value", "BMW field"}}}}, first + std::chrono::seconds(4));
         publisher.tick(true);
-        assert(id("last-update") != "last-update");
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:04.123Z");
+        assert(id("last-update") != "lastUpdate");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.123Z");
         assert(latest(base + "telemetry/" + id("last-update")) == "BMW field");
     } else if (scenario == "restore-last-update") {
         publisher.tick(true);
-        assert(latest(base + "telemetry/last-update") == "2026-10-04T12:00:04.123Z");
-        assert(latest(base + "telemetry/last-update/$datatype") == "datetime");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.123Z");
+        assert(latest(base + "telemetry/lastUpdate/$datatype") == "datetime");
     } else if (scenario == "names") {
         const std::string hood = "vehicle.body.hood.isOpen";
         const std::string tire = "vehicle.chassis.axle.row1.wheel.left.tire.pressure";
         const std::string unknown = "vehicle.newSystem.HTTPStatus";
         publisher.ingest(vin, {{hood, {{"value", false}}}, {tire, {{"value", 290}}}, {unknown, {{"value", "OK"}}}});
         publisher.tick(true);
-        assert(id(hood) == "body-hood-is-open");
-        assert(id(tire) == "chassis-axle-row1-wheel-left-tire-pressure");
-        assert(id(unknown) == "new-system-http-status");
-        assert(latest(base + "telemetry/body-hood-is-open/$name") == "Hood open");
-        assert(latest(base + "telemetry/chassis-axle-row1-wheel-left-tire-pressure/$name") == "Tire pressure — front left");
-        assert(latest(base + "telemetry/new-system-http-status/$name") == "New system http status");
+        assert(id(hood) == "bodyHoodIsOpen");
+        assert(id(tire) == "chassisAxleRow1WheelLeftTirePressure");
+        assert(id(unknown) == "newSystemHttpStatus");
+        assert(latest(base + "telemetry/bodyHoodIsOpen/$name") == "Hood open");
+        assert(latest(base + "telemetry/chassisAxleRow1WheelLeftTirePressure/$name") == "Tire pressure — front left");
+        assert(latest(base + "telemetry/newSystemHttpStatus/$name") == "New system http status");
         assert(latest(base + "telemetry/$name") == "Vehicle data");
     } else if (scenario == "migration") {
         publisher.tick(true);
         const std::string hood = "vehicle.body.hood.isOpen";
-        assert(id(hood) == "body-hood-is-open");
-        assert(latest(base + "telemetry/body-hood-is-open") == "false");
-        assert(latest(base + "telemetry/body-hood-is-open/$name") == "Hood open");
+        assert(id(hood) == "bodyHoodIsOpen");
+        assert(latest(base + "telemetry/bodyHoodIsOpen") == "false");
+        assert(latest(base + "telemetry/bodyHoodIsOpen/$name") == "Hood open");
         for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
             assert(latest(base + "telemetry/" + legacy_id(hood) + suffix).empty());
         assert(latest(base + "telemetry/$properties").find(legacy_id(hood)) == std::string::npos);
+    } else if (scenario == "migration-v2") {
+        publisher.tick(true);
+        assert(id("vehicle.body.hood.isOpen") == "bodyHoodIsOpen");
+        assert(latest(base + "telemetry/bodyHoodIsOpen") == "false");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
+        for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"}) {
+            assert(latest(base + "telemetry/body-hood-is-open" + suffix).empty());
+            assert(latest(base + "telemetry/last-update" + suffix).empty());
+        }
+        assert(latest(base + "telemetry/$properties") == "bodyHoodIsOpen,lastUpdate");
     } else if (scenario == "restore") {
         publisher.tick(true);
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
@@ -196,7 +206,7 @@ int main(int argc, char** argv) {
         publisher.ingest(vin, field);
         publisher.tick(true);
         assert(clients.size() == 1 && tls_calls == 1);
-        assert(id(key) == "drivetrain-electric-engine-charging-sme-energy-delta-fully-charged");
+        assert(id(key) == "drivetrainElectricEngineChargingSmeEnergyDeltaFullyCharged");
         assert(wills[0] == std::make_pair(base + "$state", std::string("lost")));
         assert(latest(base + "$homie") == "4.0.0");
         assert(latest(base + "$state") == "ready");
@@ -214,8 +224,8 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/$properties").find(id(key)) != std::string::npos);
         assert(latest(base + "telemetry/$properties").find(id("new.field")) != std::string::npos);
         assert(id("new.field") != id("new-field"));
-        assert(id("new-field") == "new-field");
-        assert(id("new.field").rfind("new-field-", 0) == 0);
+        assert(id("new-field") == "newField");
+        assert(id("new.field").rfind("newFieldH", 0) == 0);
         assert(latest(base + "telemetry/" + id("new.field") + "/$datatype") == "boolean");
         assert(latest(base + "telemetry/" + id("new-field") + "/$datatype") == "string");
         publisher.tick(false);
@@ -258,6 +268,10 @@ int main(int argc, char** argv) {
         publisher.tick(true);
         assert(clients.size() == 1);
     } else { assert(false); }
+    // openHAB UIDUtils leaves alphanumerics unchanged; these IDs need no escaping.
+    const auto properties = latest(base + "telemetry/$properties");
+    if (properties != "<missing>") for (unsigned char c : properties)
+        assert(c == ',' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'));
     publisher.shutdown();
     assert(clients.empty());
     if (scenario != "invalid") assert(latest(base + "$state") == "disconnected");
@@ -319,6 +333,21 @@ int main(int argc, char** argv) {
             }},
         }))
         self.run_scenario('migration', cache)
-        self.assertEqual(json.loads(cache.read_text())['version'], 2)
+        self.assertEqual(json.loads(cache.read_text())['version'], 3)
         # Retried cleanup must survive another restart after the cache was migrated.
         self.run_scenario('migration', cache)
+
+    def test_hyphenated_cache_migrates_to_camelcase_including_last_update(self):
+        cache = self.base / 'migration-v2.json'
+        cache.write_text(json.dumps({
+            'version': 2,
+            'vehicles': {'WBY8P610007L21042': {
+                'vehicle.body.hood.isOpen': {
+                    'id': 'body-hood-is-open', 'datatype': 'boolean', 'unit': '', 'value': 'false',
+                },
+            }},
+            'last_updates': {'WBY8P610007L21042': '2026-10-04T12:00:00.123Z'},
+        }))
+        self.run_scenario('migration-v2', cache)
+        self.assertEqual(json.loads(cache.read_text())['version'], 3)
+        self.run_scenario('migration-v2', cache)

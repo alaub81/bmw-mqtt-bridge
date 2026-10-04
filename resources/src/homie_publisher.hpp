@@ -68,16 +68,16 @@ class HomiePublisher {
     static std::string property_id(const Device& d, const std::string& key) {
         for (const auto& [id, p] : d.properties) if (p.name == key) return id;
         const std::string base = homie_names::field_id(key);
-        if (base != "last-update" && d.properties.count(base) == 0) return base;
-        std::string id = base + "-" + homie_names::suffix(key);
+        if (base != "lastUpdate" && d.properties.count(base) == 0) return base;
+        std::string id = base + "H" + homie_names::suffix(key);
         // Even an unlikely hash collision must not overwrite another property.
-        while (d.properties.count(id) != 0) id += "-x";
+        while (d.properties.count(id) != 0) id += "X";
         return id;
     }
     static bool valid_property_id(const std::string& id) {
         return !id.empty() && id.front() != '-' && id.back() != '-' &&
             std::all_of(id.begin(), id.end(), [](unsigned char c) {
-                return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
             });
     }
     static bool valid_vin(const std::string& vin) {
@@ -205,18 +205,18 @@ class HomiePublisher {
         }
         if (!d.last_update.empty()) {
             if (!ids.empty()) ids += ',';
-            ids += "last-update";
-            ok &= publish(d, "telemetry/last-update/$name", "Last update");
+            ids += "lastUpdate";
+            ok &= publish(d, "telemetry/lastUpdate/$name", "Last update");
             // openHAB's Homie binding supports datetime directly, without a transform.
-            ok &= publish(d, "telemetry/last-update/$datatype", "datetime");
-            ok &= publish(d, "telemetry/last-update/$settable", "false");
-            ok &= publish(d, "telemetry/last-update/$retained", "true");
-            ok &= publish(d, "telemetry/last-update/$unit", "");
+            ok &= publish(d, "telemetry/lastUpdate/$datatype", "datetime");
+            ok &= publish(d, "telemetry/lastUpdate/$settable", "false");
+            ok &= publish(d, "telemetry/lastUpdate/$retained", "true");
+            ok &= publish(d, "telemetry/lastUpdate/$unit", "");
         }
         ok &= publish(d, "telemetry/$properties", ids);
         if (ok) {
             for (const auto& id : d.legacy_ids) {
-                if (id == "last-update" || d.properties.count(id) != 0) continue;
+                if (id == "lastUpdate" || d.properties.count(id) != 0) continue;
                 const std::string base = "telemetry/" + id;
                 for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
                     ok &= publish(d, base + suffix, "");
@@ -231,11 +231,10 @@ class HomiePublisher {
             json cache;
             input >> cache;
             const int version = cache.at("version").get<int>();
-            if ((version != 1 && version != 2) || !cache.at("vehicles").is_object())
+            if ((version != 1 && version != 2 && version != 3) || !cache.at("vehicles").is_object())
                 throw std::runtime_error("unsupported cache format");
             // Validate the entire file before installing any cached devices.
             std::map<std::string, std::unique_ptr<Device>> restored;
-            bool migrated_id = false;
             for (const auto& [vin, fields] : cache.at("vehicles").items()) {
                 if (!valid_vin(vin) || !fields.is_object()) throw std::runtime_error("invalid cached vehicle");
                 auto entry = std::make_unique<Device>();
@@ -245,18 +244,22 @@ class HomiePublisher {
                                field.at("unit").get<std::string>(), field.at("value").get<std::string>()};
                     if (name.empty() || (p.datatype != "float" && p.datatype != "boolean" && p.datatype != "string"))
                         throw std::runtime_error("invalid cached property");
-                    std::string id = version == 1 ? property_id(*entry, name) : field.at("id").get<std::string>();
-                    if (id == "last-update") {
-                        id = property_id(*entry, name);
-                        migrated_id = true;
-                    }
+                    const std::string id = version < 3 ? property_id(*entry, name) : field.at("id").get<std::string>();
+                    if (version == 3 && (id == "lastUpdate" || id.find('-') != std::string::npos))
+                        throw std::runtime_error("invalid cached alphanumeric property ID");
                     if (!valid_property_id(id) || !entry->properties.emplace(id, std::move(p)).second)
                         throw std::runtime_error("invalid or duplicate cached property ID");
                     if (version == 1) entry->legacy_ids.insert(legacy_property_id(name));
+                    if (version == 2) {
+                        const std::string previous_id = field.at("id").get<std::string>();
+                        if (!valid_property_id(previous_id)) throw std::runtime_error("invalid cached previous ID");
+                        entry->legacy_ids.insert(previous_id);
+                    }
                 }
                 if (cache.contains("last_updates") && cache.at("last_updates").contains(vin))
                     entry->last_update = cache.at("last_updates").at(vin).get<std::string>();
-                if (version == 2 && cache.contains("legacy_ids") && cache.at("legacy_ids").contains(vin)) {
+                if (version < 3 && !entry->last_update.empty()) entry->legacy_ids.insert("last-update");
+                if (version >= 2 && cache.contains("legacy_ids") && cache.at("legacy_ids").contains(vin)) {
                     for (const auto& id : cache.at("legacy_ids").at(vin)) {
                         const auto legacy = id.get<std::string>();
                         if (!valid_property_id(legacy)) throw std::runtime_error("invalid cached legacy ID");
@@ -266,7 +269,7 @@ class HomiePublisher {
                 if (!entry->properties.empty()) restored.emplace(vin, std::move(entry));
             }
             devices = std::move(restored);
-            cache_dirty = version == 1 || migrated_id;
+            cache_dirty = version < 3;
             std::cerr << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
             std::cerr << "[homie] cannot load field cache: " << e.what() << '\n';
@@ -284,7 +287,7 @@ class HomiePublisher {
             if (!d->legacy_ids.empty()) legacy_ids[vin] = d->legacy_ids;
             if (!d->last_update.empty()) last_updates[vin] = d->last_update;
         }
-        if (write_file_atomic(cache_path, json{{"version", 2}, {"vehicles", vehicles},
+        if (write_file_atomic(cache_path, json{{"version", 3}, {"vehicles", vehicles},
                                               {"legacy_ids", legacy_ids}, {"last_updates", last_updates}}.dump())) {
             cache_dirty = false;
         } else {
@@ -360,7 +363,7 @@ public:
                 if (ok) {
                     for (const auto& [id, p] : d.properties)
                         ok &= publish(d, "telemetry/" + id, p.value);
-                    if (!d.last_update.empty()) ok &= publish(d, "telemetry/last-update", d.last_update);
+                    if (!d.last_update.empty()) ok &= publish(d, "telemetry/lastUpdate", d.last_update);
                 }
                 const std::string state = bmw_connected ? "ready" : "alert";
                 if (ok) ok = publish(d, "$state", state);

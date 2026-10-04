@@ -650,8 +650,9 @@ Each VIN becomes a device at `homie/bmw-<lowercase-VIN>`, with a `telemetry` nod
 Each received field under `data` becomes a read-only property. `$unit` comes from
 the message, and the value topic contains the scalar value rather than the RAW
 JSON envelope. The node is displayed as **Vehicle data**. Property IDs remove the
-leading `vehicle.`, split CamelCase words and replace punctuation with hyphens:
-`vehicle.body.hood.isOpen` becomes `body-hood-is-open`. If two original fields
+leading `vehicle.` and combine path segments into alphanumeric CamelCase IDs:
+`vehicle.body.hood.isOpen` becomes `bodyHoodIsOpen`. This avoids openHAB escaping
+hyphens into `_2D` sequences in channel IDs. If two original fields
 produce the same ID, the later field receives a stable hash suffix. Assigned IDs
 are stored in the cache so additions and restarts do not rename existing channels.
 
@@ -662,7 +663,7 @@ mapping is maintained in `resources/src/homie_names.hpp`; the cache retains the
 original BMW field name as its key.
 
 Each vehicle also exposes **Last update** at
-`homie/bmw-<lowercase-VIN>/telemetry/last-update`. This is the bridge's UTC receipt
+`homie/bmw-<lowercase-VIN>/telemetry/lastUpdate`. This is the bridge's UTC receipt
 time of the latest message containing at least one valid, non-empty BMW value,
 for example `2026-10-04T12:00:00.123Z`. Identical readings still count as newly
 received data. Empty/invalid messages, connection status changes, timer ticks,
@@ -674,12 +675,13 @@ same replay behavior as the telemetry values. Existing caches have no receipt
 time until another valid message arrives; the bridge does not invent a timestamp
 when loading old readings. The property uses openHAB's supported `datetime`
 datatype while retaining the Homie 4 discovery structure. Link the discovered
-`telemetry#last-update` channel to a **DateTime** Item in MainUI with the default
+`telemetry#lastUpdate` channel to a **DateTime** Item in MainUI with the default
 profile. No JSONPath transformation or timestamp-update profile is needed.
 
-Earlier caches with hexadecimal property IDs are migrated automatically to cache
-version 2, preserving their values. The updated description lists the readable IDs
-and clears the old retained property values and metadata. Cleanup records persist
+Earlier caches with hexadecimal or hyphenated property IDs are migrated
+automatically to cache version 3, preserving their values and Last update timestamp. The updated description lists the readable IDs
+and clears the old retained property values and metadata, including the previous
+`telemetry/last-update` timestamp topic. Cleanup records persist
 in the cache and are replayed on reconnect to recover from interrupted migration.
 This changes channel IDs: existing openHAB Item links must be reassigned. If an
 already adopted Thing still shows old channels, remove and rediscover that Thing

@@ -8,7 +8,7 @@
 
 namespace homie_names {
 
-inline std::string field_id(const std::string& field) {
+inline std::string word_id(const std::string& field) {
     const std::string key = field.rfind("vehicle.", 0) == 0 ? field.substr(8) : field;
     std::string id;
     for (size_t i = 0; i < key.size(); ++i) {
@@ -30,6 +30,20 @@ inline std::string field_id(const std::string& field) {
     }
     if (!id.empty() && id.back() == '-') id.pop_back();
     return id.empty() ? "field" : id;
+}
+
+inline std::string field_id(const std::string& field) {
+    std::string id;
+    bool capitalize = false;
+    for (char c : word_id(field)) {
+        if (c == '-') {
+            capitalize = true;
+            continue;
+        }
+        id += capitalize && c >= 'a' && c <= 'z' ? static_cast<char>(c - ('a' - 'A')) : c;
+        capitalize = false;
+    }
+    return id;
 }
 
 inline std::string suffix(const std::string& field) {
@@ -62,7 +76,7 @@ inline std::string label(const std::string& field) {
     };
     const auto known = labels.find(field);
     if (known != labels.end()) return known->second;
-    std::string result = field_id(field);
+    std::string result = word_id(field);
     for (char& c : result) if (c == '-') c = ' ';
     if (result[0] >= 'a' && result[0] <= 'z') result[0] -= 'a' - 'A';
     return result;
