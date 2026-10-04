@@ -56,6 +56,7 @@
 //   BMB_MQTT_LOCAL_TLS_CA_FILE: PEM CA file (default system CA bundle)
 //   BMB_MQTT_RETAIN           : 0/1 (default 0; status is always retained)
 //   BMB_MQTT_SPLIT_TOPICS     : 0/1  (default: 0; split JSON into per-signal topics)
+//   BMB_MQTT_RAW_TOPICS       : 0/1  (default: 1; full JSON on RAW and Legacy topics)
 //   BMB_MQTT_HOMIE            : 0/1  (default: 0; additional Homie 4 devices)
 //   BMB_BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
 //
@@ -138,6 +139,7 @@ static std::string BMB_MQTT_LOCAL_USER;
 static std::string BMB_MQTT_LOCAL_PASSWORD;
 static std::string MQTT_LOCAL_STATUS_TOPIC;
 static int         BMB_MQTT_SPLIT_TOPICS = 0;
+static int         BMB_MQTT_RAW_TOPICS = 1;
 static int         BMB_MQTT_HOMIE = 0;
 static int         BMB_BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
 static std::string ID_TOKEN_FILE;
@@ -629,7 +631,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
     if (!m || !m->topic) return;
     std::string in_topic = m->topic ? m->topic : "";
 
-    // Republish both raw and legacy topics.
+    // Optionally republish full JSON on both raw and legacy topics.
     auto pos = in_topic.find('/');
     std::string raw_topic    = BMB_MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
     std::string legacy_topic = BMB_MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
@@ -637,16 +639,18 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
     bool retain_flag = (BMB_MQTT_RETAIN != 0);
     const std::string raw_payload(m->payload ? static_cast<const char*>(m->payload) : "",
                                   m->payload ? static_cast<size_t>(m->payloadlen) : 0);
-    int rc1 = publish_local(raw_topic, raw_payload, retain_flag);
-    int rc2 = publish_local(legacy_topic, raw_payload, retain_flag);
+    if (BMB_MQTT_RAW_TOPICS) {
+        int rc1 = publish_local(raw_topic, raw_payload, retain_flag);
+        int rc2 = publish_local(legacy_topic, raw_payload, retain_flag);
 
-    std::cerr << "[bridge] fwd rc1=" << rc1
-              << " rc2=" << rc2
-              << " retain=" << (retain_flag ? 1 : 0)
-              << " in='"  << in_topic
-              << "' raw='"<< raw_topic
-              << "' legacy='"<< legacy_topic
-              << "' bytes="<< m->payloadlen << "\n";
+        std::cerr << "[bridge] fwd rc1=" << rc1
+                  << " rc2=" << rc2
+                  << " retain=" << (retain_flag ? 1 : 0)
+                  << " in='"  << in_topic
+                  << "' raw='"<< raw_topic
+                  << "' legacy='"<< legacy_topic
+                  << "' bytes="<< m->payloadlen << "\n";
+    }
 
     // Optionally publish individual data fields.
     if ((!BMB_MQTT_SPLIT_TOPICS && !BMB_MQTT_HOMIE) || !m->payload || m->payloadlen <= 0)
@@ -780,6 +784,7 @@ int main() try {
     BMB_MQTT_LOCAL_USER       = env_str("BMB_MQTT_LOCAL_USER",       "");
     BMB_MQTT_LOCAL_PASSWORD   = env_str("BMB_MQTT_LOCAL_PASSWORD",   "");
     BMB_MQTT_SPLIT_TOPICS     = env_int("BMB_MQTT_SPLIT_TOPICS",      0);
+    BMB_MQTT_RAW_TOPICS       = env_int("BMB_MQTT_RAW_TOPICS",         1);
     BMB_MQTT_HOMIE            = env_int("BMB_MQTT_HOMIE",             0);
     BMB_MQTT_RETAIN           = env_int("BMB_MQTT_RETAIN",            0);
     if (BMB_BMW_PORT < 1 || BMB_BMW_PORT > 65535 || BMB_MQTT_LOCAL_PORT < 1 || BMB_MQTT_LOCAL_PORT > 65535) {
@@ -790,6 +795,9 @@ int main() try {
     }
     if (BMB_MQTT_HOMIE != 0 && BMB_MQTT_HOMIE != 1) {
         throw std::invalid_argument("BMB_MQTT_HOMIE must be 0 or 1");
+    }
+    if (BMB_MQTT_RAW_TOPICS != 0 && BMB_MQTT_RAW_TOPICS != 1) {
+        throw std::invalid_argument("BMB_MQTT_RAW_TOPICS must be 0 or 1");
     }
     if (BMB_MQTT_LOCAL_PREFIX.find_first_of("+#") != std::string::npos) {
         throw std::invalid_argument("BMB_MQTT_LOCAL_PREFIX must not contain MQTT wildcards (+ or #)");

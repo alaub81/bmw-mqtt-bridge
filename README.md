@@ -438,6 +438,7 @@ Validation on startup:
 | Variable        | Type | Default | Required | Description |
 |-----------------|------|---------|----------|-------------|
 | `BMB_MQTT_SPLIT_TOPICS`  | int  | `0`     | No       | `0` = disabled, `1` = enabled. When enabled, JSON payloads are parsed and individual fields are republished under `vehicles/<VIN>/<propertyName>`. |
+| `BMB_MQTT_RAW_TOPICS` | int | `1` | No | `0` disables full JSON publishing on both RAW and Legacy topics; `1` enables it. Independent of Split and Homie output. |
 | `BMB_MQTT_HOMIE` | int | `0` | No | `1` additionally publishes Homie 4 devices and properties under `homie/` for openHAB discovery. Independent of split topics; Homie messages are retained. |
 
 ### 🔁 Retained Messages
@@ -475,7 +476,7 @@ reads `BMB_BMW_HEARTBEAT_FILE` automatically. Adding these keys to the host `.en
 alone does not pass them to the container; declare them under `environment`.
 
 Numeric options reject invalid values instead of silently falling back to defaults.
-Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS`, `BMB_MQTT_HOMIE` and
+Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS`, `BMB_MQTT_RAW_TOPICS`, `BMB_MQTT_HOMIE` and
 `BMB_MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
 
@@ -593,6 +594,21 @@ connection; this may take until the keepalive timeout.
 
 ### Split Topics (Structured JSON Publishing)
 
+Full JSON publishing is enabled by default (`BMB_MQTT_RAW_TOPICS=1`). Set
+`BMB_MQTT_RAW_TOPICS=0` in `.env` to stop publishing both `bmw/raw/...` and the
+Legacy `bmw/<VIN>/...` topics, including when a custom prefix is configured.
+Split Topics, Homie (including Last update) and connection status work independently.
+Disabling publishing does not remove previously retained messages from the broker;
+clear those manually if needed.
+
+For Homie-only telemetry, configure:
+
+```ini
+BMB_MQTT_RAW_TOPICS=0
+BMB_MQTT_SPLIT_TOPICS=0
+BMB_MQTT_HOMIE=1
+```
+
 By default, the bridge republishes BMW CarData messages exactly as received
 into a local topic of the form:
 
@@ -625,7 +641,8 @@ Enable the additional Homie output in `.env`:
 BMB_MQTT_HOMIE=1
 ```
 
-The default is `0` (disabled). RAW and Legacy publishing continue as before.
+The default is `0` (disabled). RAW and Legacy publishing are controlled separately
+by `BMB_MQTT_RAW_TOPICS` (default `1`).
 Homie works with either setting of `BMB_MQTT_SPLIT_TOPICS` and uses Homie **4.0.0**,
 which openHAB supports, rather than Homie 5.
 
