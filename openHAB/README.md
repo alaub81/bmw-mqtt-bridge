@@ -70,6 +70,32 @@ zusätzlich angezeigt. Eine Wallbox kann auch ohne ladendes Auto Strom verbrauch
 
 ## Werte und Zustände
 
+### Ladekabel-Symbol
+
+Unter **Status und Empfangszeit → Ladekabel angeschlossen** das Anschlussstatus-Item
+auswählen (`chargingCableItem`). Bei Elektro/Hybrid steht ein kleines Stecker-Symbol
+links neben dem Ladestatus und der Ladeleistung. Auf schmalen Ansichten bricht die
+Zeile um. Die Anzeige besteht ausschließlich aus dem Symbol:
+
+- Grüner Stecker: angeschlossen.
+- Dezenter, durchgestrichener Stecker: getrennt.
+- Oranges Fragezeichen: unbekannt.
+
+Der vollständige Zustand bleibt als Tooltip und für Screenreader verfügbar.
+
+Ohne hinterlegtes Item wird das Symbol ausgeblendet. Es funktioniert auch, wenn
+nur der Kabelstatus und kein Ladestatus-/Leistungs-Item konfiguriert ist.
+Ein angeschlossenes Kabel bedeutet nicht automatisch, dass das Fahrzeug lädt;
+die Ladestatuszeile und die Standby-Grenze der Leistung bleiben unabhängig davon.
+
+Standardmäßig gelten `ON`, `TRUE`, `CONNECTED`, `PLUGGED_IN` als angeschlossen und
+`OFF`, `FALSE`, `DISCONNECTED`, `UNPLUGGED` als getrennt. Die Mehrfachfelder
+**Ladekabel: angeschlossen** (`chargingCableConnectedStates`) und
+**Ladekabel: getrennt** (`chargingCableDisconnectedStates`) passen die Zuordnung
+an die tatsächlichen Rohzustände an. Groß-/Kleinschreibung und umgebende Leerzeichen
+werden ignoriert. `NULL`, `UNDEF`, fehlende oder nicht zugeordnete Werte bleiben
+unbekannt. Bei doppelt zugeordneten Zuständen hat angeschlossen Vorrang.
+
 | Parameter | Erwarteter Item-Zustand |
 | --- | --- |
 | `driveType` | `EV` (Elektro), `DIESEL`, `ICE` (Benzin), `PHEV` (Plug-in-Hybrid) |
@@ -135,7 +161,7 @@ Fenster und Türen/Kofferraum haben getrennte Zustandszuordnungen:
 
 | Kategorie | Offen | Geschlossen |
 | --- | --- | --- |
-| Fenster | `OPEN`, `OPENED`, `TILTED`, `PARTIALLY_OPEN` | `CLOSE`, `CLOSED` |
+| Fenster | `OPEN`, `OPENED`, `INTERMEDIATE`, `TILTED`, `PARTIALLY_OPEN` | `CLOSE`, `CLOSED` |
 | Türen und Kofferraum | `TRUE`, `ON` | `FALSE`, `OFF` |
 
 Die vier Mehrfachfelder **Fenster: offen / teilweise offen** (`windowOpenStates`),
@@ -143,6 +169,8 @@ Die vier Mehrfachfelder **Fenster: offen / teilweise offen** (`windowOpenStates`
 (`doorOpenStates`) und **Türen und Kofferraum: geschlossen** (`doorClosedStates`)
 passen die Listen unabhängig voneinander an. Ohne eigene Liste gelten die Werte
 in der Tabelle. Groß-/Kleinschreibung und umgebende Leerzeichen werden ignoriert.
+Für BMW-Fenster können z. B. `OPEN` und `INTERMEDIATE` als zwei einzelne Einträge
+hinterlegt werden; im YAML lautet die Konfiguration `windowOpenStates: [OPEN, INTERMEDIATE]`.
 Teilweise offene oder gekippte Fenster zählen als offen. Wenn ein Zustand in
 beiden Listen seiner Kategorie steht, hat offen Vorrang. `NULL`, `UNDEF`, fehlende
 Items und nicht zugeordnete Werte bleiben unbekannt. Wird dasselbe Item in beiden
@@ -173,14 +201,29 @@ Referenzen: [YAML-Widgets](https://www.openhab.org/docs/configuration/yaml/widge
 
 ## Kompakte Anzeige und fehlende Energiemenge
 
+Die sichtbaren Beschriftungen **Akku** und **Tank** sind durch neutrale
+Material-Symbole (`battery_full` und `local_gas_station`) mit 22 px Größe ersetzt,
+passend zum Ladestecker. Tooltip und Screenreader benennen die Symbole weiterhin.
+Nachlade-/Nachtankmenge steht neben dem Symbol, aktueller Inhalt und Prozentwert
+bleiben rechts. Ohne Berechnungsquelle steht links nur das Symbol. Die Symbole
+folgen der bisherigen Sichtbarkeit der Akku-/Tanksektion.
+
 Der Kilometerstand steht hinter dem Antrieb unter dem Fahrzeugnamen. Die letzte
 Empfangszeit erscheint unter dem Verriegelungsstatus; die Ladeleistung steht in
 der Ladestatuszeile.
 
 **Akku · 8,4 kWh nachladen** verwendet bevorzugt das optionale Item
 `batteryMissingEnergyItem` (BMW `smeEnergyDeltaFullyCharged`). Wh werden in kWh
-umgerechnet. Alternativ `batteryCapacityKwh` mit der nutzbaren Akkukapazität
-befüllen: Die Schätzung ist Kapazität × (100 − Akkustand) / 100, ohne Ladeverluste.
+umgerechnet. Alternativ die nutzbare Gesamtkapazität über `batteryCapacityItem`
+als kWh-/Wh-Item oder über `batteryCapacityKwh` als festen kWh-Wert konfigurieren.
+Die Schätzung ist Kapazität × (100 − Akkustand) / 100, ohne Ladeverluste.
+Beispiel: 40 kWh Gesamtkapazität und 75 % Ladezustand ergeben 10 kWh nachzuladen.
+Die Einheit ist **kWh**, nicht kW/h.
+
+Reihenfolge: direktes Delta-Item → Kapazitäts-Item plus Ladeprozent → feste
+Kapazität plus Ladeprozent. Wenn eine ausgewählte Quelle keinen gültigen Wert
+liefert, erscheint `—`; es wird nicht unbemerkt zu einer anderen Quelle gewechselt.
+Ein reiner Prozentwert reicht ohne Kapazität nicht für eine kWh-Berechnung.
 
 Der Tankinhalt aus `fuelRemainingItem` steht rechts vor dem Prozentwert,
 z. B. **42,2 l · 64 %**, auch ohne Tankkapazität. Links erscheint zusätzlich
@@ -189,10 +232,17 @@ Item `fuelRemainingItem` (BMW `remainingFuel`, in Litern) wird dessen Inhalt von
 der Kapazität abgezogen. Andernfalls wird aus Kapazität und Tank-Prozentstand
 geschätzt. Kapazitäten werden pro Fahrzeug eingestellt; es gibt keine Vorgaben.
 Fehlende oder ungültige konfigurierte Messwerte zeigen **—**. Ohne Konfiguration
-bleiben die Beschriftungen **Akku** bzw. **Tank**.
+bleiben links nur die Akku- bzw. Tanksymbole.
 
-Das optionale `batteryEnergyItem` zeigt den gewählten Akkuinhalt bzw. die
-Batteriekapazität direkt rechts vor dem Prozentwert, z. B. **30,4 kWh · 80 %**.
-Wh werden in kWh umgerechnet. Dieses Anzeige-Item beeinflusst die Berechnung der
-nachzuladenden Energie nicht; dafür gelten weiterhin `batteryMissingEnergyItem`
-bzw. `batteryCapacityKwh`.
+Rechts neben dem Akkubalken steht der **aktuelle Energieinhalt vor den Prozenten**:
+Kapazität × Ladeprozent / 100. Die Gesamtkapazität stammt aus `batteryCapacityItem`
+oder alternativ dem festen Wert `batteryCapacityKwh`. Bei 38,76 kWh und 93 %
+erscheint **36,0 kWh · 93 %**. Diese berechnete Energiemenge ist eine Schätzung.
+Das Delta-Item beeinflusst weiterhin nur die links angezeigte nachzuladende Energie.
+
+`batteryEnergyItem` ist ausschließlich für ein optionales Item mit **aktuell
+gespeicherter Energie** vorgesehen und hat als direkter Messwert Vorrang vor
+der Berechnung. Kein Gesamtkapazitäts-Item hier eintragen. Für die Berechnung
+dieses Feld leer lassen und **Nutzbare Akkukapazität als Item** oder den festen
+Kapazitätswert einstellen. Wh werden in kWh umgerechnet. Ohne direkte Energie
+oder konfigurierte Gesamtkapazität erscheinen weiterhin nur die Prozentwerte.
