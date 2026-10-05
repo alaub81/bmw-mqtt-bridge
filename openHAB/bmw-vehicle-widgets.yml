@@ -1057,17 +1057,19 @@ widgets:
                                       - component: oh-repeater
                                         config:
                                           for: window
-                                          sourceType: array
-                                          in: =fn.openingNames(props.windowItems)
+                                          sourceType: itemsWithTags
+                                          # Empty tags fetch Item details, including translated labels.
+                                          itemTags: =[]
+                                          filter: fn.openingNames(props.windowItems).indexOf(loop.window.name) >= 0
                                           fragment: true
                                         slots:
                                           default:
                                             - component: oh-label-item
                                               config:
-                                                item: =loop.window
-                                                after: =fn.openingText(fn.openingState(loop.window))
-                                                footer: '=fn.openingState(loop.window) === ''unknown''
-                                                  ? ''Rohzustand: '' + fn.state(loop.window)
+                                                item: =loop.window.name
+                                                after: =fn.openingText(fn.openingState(loop.window.name))
+                                                footer: '=fn.openingState(loop.window.name) === ''unknown''
+                                                  ? ''Rohzustand: '' + fn.state(loop.window.name)
                                                   : '''''
                                                 noChevron: true
                                                 style:
@@ -1076,11 +1078,11 @@ widgets:
                                                   --f7-list-item-after-white-space: normal
                                                   --f7-list-item-title-font-size: 14px
                                                   --f7-list-item-after-font-size: 14px
-                                                  --f7-list-item-after-text-color: '=fn.openingState(loop.window)
+                                                  --f7-list-item-after-text-color: '=fn.openingState(loop.window.name)
                                                     === ''open'' ? ''var(--f7-color-orange)''
                                                     : ''var(--f7-list-item-after-text-color-default,
                                                     var(--f7-text-color))'''
-                                                title: =loop.window.replace(/_/g, ' ')
+                                                title: =loop.window.label || loop.window.name.replace(/_/g, ' ')
                           - component: div
                             config:
                               visible: =fn.openingNames(props.doorItems).length > 0
@@ -1109,17 +1111,19 @@ widgets:
                                       - component: oh-repeater
                                         config:
                                           for: door
-                                          sourceType: array
-                                          in: =fn.openingNames(props.doorItems)
+                                          sourceType: itemsWithTags
+                                          # Empty tags fetch Item details, including translated labels.
+                                          itemTags: =[]
+                                          filter: fn.openingNames(props.doorItems).indexOf(loop.door.name) >= 0
                                           fragment: true
                                         slots:
                                           default:
                                             - component: oh-label-item
                                               config:
-                                                item: =loop.door
-                                                after: =fn.openingText(fn.openingState(loop.door))
-                                                footer: '=fn.openingState(loop.door) === ''unknown''
-                                                  ? ''Rohzustand: '' + fn.state(loop.door) :
+                                                item: =loop.door.name
+                                                after: =fn.openingText(fn.openingState(loop.door.name))
+                                                footer: '=fn.openingState(loop.door.name) === ''unknown''
+                                                  ? ''Rohzustand: '' + fn.state(loop.door.name) :
                                                   '''''
                                                 noChevron: true
                                                 style:
@@ -1128,11 +1132,11 @@ widgets:
                                                   --f7-list-item-after-white-space: normal
                                                   --f7-list-item-title-font-size: 14px
                                                   --f7-list-item-after-font-size: 14px
-                                                  --f7-list-item-after-text-color: '=fn.openingState(loop.door)
+                                                  --f7-list-item-after-text-color: '=fn.openingState(loop.door.name)
                                                     === ''open'' ? ''var(--f7-color-orange)''
                                                     : ''var(--f7-list-item-after-text-color-default,
                                                     var(--f7-text-color))'''
-                                                title: =loop.door.replace(/_/g, ' ')
+                                                title: =loop.door.label || loop.door.name.replace(/_/g, ' ')
   bmw_vehicle_comfort_card:
     tags: []
     props:

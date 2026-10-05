@@ -152,8 +152,8 @@ gezählt. Nur die ausgewählten Öffnungen werden überwacht; leere Kategorien w
 nicht angezeigt. Doppelte Item-Namen zählen im Gesamtstatus nur einmal.
 
 **Öffnungen · antippen** öffnet die Detailansicht mit getrennten Abschnitten
-**Fenster** und **Türen & Kofferraum**. Jeder Eintrag zeigt den lesbar formatierten
-Item-Namen sowie **Offen**, **Geschlossen** oder **Unbekannt**. Bei unbekannten
+**Fenster** und **Türen & Kofferraum**. Jeder Eintrag zeigt das in openHAB
+hinterlegte Item-Label (ohne Label den lesbar formatierten Item-Namen) sowie **Offen**, **Geschlossen** oder **Unbekannt**. Bei unbekannten
 Werten wird zusätzlich der Rohzustand angezeigt. Sind auch Reifendruck-Items
 konfiguriert, erscheinen deren Details in derselben aufklappbaren Ansicht.
 
