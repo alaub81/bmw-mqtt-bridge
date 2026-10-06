@@ -104,7 +104,7 @@ unbekannt. Bei doppelt zugeordneten Zuständen hat angeschlossen Vorrang.
 | `chargeRemainingItem` | Minuten, z. B. `24` oder `24 min` |
 | `chargingPowerItem` | Watt oder Kilowatt, z. B. `7200 W` oder `7.2 kW` |
 | `lockItem` | Standard: `ON` verriegelt, `OFF` entriegelt; konfigurierbar |
-| `chargingItem` | Standard: `ON` lädt, `OFF` lädt nicht; konfigurierbar |
+| `chargingItem` | Standard: `ON` lädt, `OFF` lädt nicht; mehrere Zustände konfigurierbar |
 | `windowItems`, `doorItems` | Mehrfachauswahl der einzelnen Fenster bzw. Türen und des Kofferraums; Switch, Contact oder String |
 | `openingsItem` (Fallback) | `ON`: mindestens eine überwachte Öffnung offen; `OFF`: alle überwachten Öffnungen zu |
 | `tireWarningItem` | `ON`: Warnung gemeldet; `OFF`: keine Warnung gemeldet |
@@ -246,3 +246,18 @@ der Berechnung. Kein Gesamtkapazitäts-Item hier eintragen. Für die Berechnung
 dieses Feld leer lassen und **Nutzbare Akkukapazität als Item** oder den festen
 Kapazitätswert einstellen. Wh werden in kWh umgerechnet. Ohne direkte Energie
 oder konfigurierte Gesamtkapazität erscheinen weiterhin nur die Prozentwerte.
+
+## Mehrere Ladezustände
+
+Unter **Status** können in **Zustände: lädt** (`chargingState`) mehrere
+Rohzustände einzeln hinterlegt werden, z. B. `CHARGING` und `CHARGINGAC`.
+Für **Zustände: lädt nicht** (`notChargingState`) ist ebenfalls eine
+Mehrfachauswahl möglich. Groß-/Kleinschreibung muss zum Item passen.
+
+```yaml
+chargingState: [CHARGING, CHARGINGAC]
+notChargingState: [NOCHARGING, FINISHED]
+```
+
+Die Standardzuordnung bleibt `ON` / `OFF`. Bestehende Konfigurationen mit
+einem einzelnen Textwert funktionieren weiterhin.

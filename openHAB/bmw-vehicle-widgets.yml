@@ -54,8 +54,7 @@ widgets:
           context: item
           groupName: energy
           description: Number oder Number:Dimensionless, Wert von 0 bis 100 in Prozent.
-        - &id001
-          name: batteryEnergyItem
+        - name: batteryEnergyItem
           label: Aktueller Akkuinhalt als Item (optional, kWh / Wh)
           type: TEXT
           context: item
@@ -302,17 +301,17 @@ widgets:
           groupName: status
           description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
         - name: chargingState
-          label: 'Zustand: lädt'
+          label: 'Zustände: lädt'
           type: TEXT
-          default: 'ON'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung beachten.
         - name: notChargingState
-          label: 'Zustand: lädt nicht'
+          label: 'Zustände: lädt nicht'
           type: TEXT
-          default: 'OFF'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung beachten.
     component: f7-list-item
     config:
       accordionItem: =!!(((props.windowItems || []).length > 0 || (props.doorItems || []).length
@@ -753,9 +752,9 @@ widgets:
                                       flex-shrink: '0'
                           - component: Label
                             config:
-                              text: '=(props.chargingItem ? (fn.state(props.chargingItem) ===
-                                (props.chargingState || ''ON'') ? ''Lädt'' : fn.state(props.chargingItem)
-                                === (props.notChargingState || ''OFF'') ? ''Lädt nicht'' : ''Ladestatus
+                              text: '=(props.chargingItem ? ([].concat(props.chargingState || ''ON'').indexOf(fn.state(props.chargingItem))
+                                >= 0 ? ''Lädt'' : [].concat(props.notChargingState || ''OFF'').indexOf(fn.state(props.chargingItem))
+                                >= 0 ? ''Lädt nicht'' : ''Ladestatus
                                 unbekannt'') : '''') + (props.chargeTargetItem ? (props.chargingItem
                                 ? '' · '' : '''') + ''Ladeziel: '' + fn.value(props.chargeTargetItem,
                                 '' %'', 0) : '''') + (props.chargeRemainingItem ? (props.chargingItem
@@ -1190,7 +1189,14 @@ widgets:
           context: item
           groupName: energy
           description: Number oder Number:Dimensionless, Wert von 0 bis 100 in Prozent.
-        - *id001
+        - name: batteryEnergyItem
+          label: Aktueller Akkuinhalt als Item (optional, kWh / Wh)
+          type: TEXT
+          context: item
+          groupName: energy
+          description: Nur ein Item für tatsächlich aktuell gespeicherte Energie, nicht die
+            Gesamtkapazität. Optionaler direkter Messwert; sonst wird der Inhalt aus nutzbarer
+            Kapazität und Ladeprozent berechnet.
         - name: batteryMissingEnergyItem
           label: Fehlende Akkuenergie bis 100 % (kWh)
           type: TEXT
@@ -1430,17 +1436,17 @@ widgets:
           groupName: status
           description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
         - name: chargingState
-          label: 'Zustand: lädt'
+          label: 'Zustände: lädt'
           type: TEXT
-          default: 'ON'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung beachten.
         - name: notChargingState
-          label: 'Zustand: lädt nicht'
+          label: 'Zustände: lädt nicht'
           type: TEXT
-          default: 'OFF'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung beachten.
     component: oh-list-card
     config:
       noShadow: true
