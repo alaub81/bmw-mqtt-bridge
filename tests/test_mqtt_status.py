@@ -41,6 +41,7 @@ static int g_shutdown_mid = 0;
 static bool g_shutdown_acknowledged = false;
 static std::string MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
 static int BMB_BMW_STATUS_STABLE_DELAY = 0;
+static int BMB_MQTT_RAW_TOPICS = 1, BMB_MQTT_SPLIT_TOPICS = 0;
 constexpr int MOSQ_ERR_SUCCESS = 0;
 static int publish_count = 0, publish_result = 0;
 static json payload;
@@ -68,7 +69,18 @@ const char* mosquitto_connack_string(int) { return "test CONNACK"; }
 int main(int argc, char** argv) {
     const std::string scenario = argv[1];
     g_connected = true;
-    if (scenario == "offline") {
+    if (scenario == "output-modes") {
+        for (int raw : {0, 1}) for (int split : {0, 1}) {
+            BMB_MQTT_RAW_TOPICS = raw;
+            BMB_MQTT_SPLIT_TOPICS = split;
+            publish_count = 0;
+            on_local_connect(&client, nullptr, 0);
+            assert(publish_count == (raw || split ? 1 : 0));
+            assert(publish_shutdown_status());
+            if (raw || split) acknowledgement.join();
+            assert(publish_count == (raw || split ? 2 : 0));
+        }
+    } else if (scenario == "offline") {
         publish_status();
         assert(publish_count == 0);
     } else if (scenario == "rejected") {
@@ -158,7 +170,7 @@ int main(int argc, char** argv) {
                                      str(ROOT / 'resources/src'), str(path),
                                      '-o', str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            for scenario in ('offline', 'rejected', 'retry', 'reconnect', 'delayed-local',
+            for scenario in ('output-modes', 'offline', 'rejected', 'retry', 'reconnect', 'delayed-local',
                              'shutdown', 'shutdown-offline', 'shutdown-error',
                              'shutdown-unrelated-ack', 'reconnect-bmw-offline', 'periodic-refresh',
                              'current-bmw-state', 'stale-local-callback'):

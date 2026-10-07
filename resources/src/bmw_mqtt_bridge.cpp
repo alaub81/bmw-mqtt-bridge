@@ -308,6 +308,7 @@ static void check_bmw_connection(std::chrono::steady_clock::time_point now) {
 
 // Debounced status publisher for MQTT_LOCAL_STATUS_TOPIC
 static void publish_status(std::chrono::steady_clock::time_point status_now = std::chrono::steady_clock::now()) {
+    if (!BMB_MQTT_RAW_TOPICS && !BMB_MQTT_SPLIT_TOPICS) return;
     static std::mutex status_mutex;
     std::lock_guard<std::mutex> lock(status_mutex);
     static long  disconnected_since = 0;   // 0 = not currently timing
@@ -376,6 +377,7 @@ static void on_local_publish(struct mosquitto*, void*, int mid) {
 }
 
 static bool publish_shutdown_status() {
+    if (!BMB_MQTT_RAW_TOPICS && !BMB_MQTT_SPLIT_TOPICS) return true;
     std::lock_guard<std::mutex> local_lock(g_local_mutex);
     if (!g_local || !g_local_connected.load()) return false;
     json status = {{"connected", false}, {"timestamp", static_cast<long>(time(nullptr))}};
@@ -520,7 +522,7 @@ static mosquitto* create_local_client() {
     mosquitto_log_callback_set(client, on_local_log);
     const char* lwt = "{\"connected\":false}";
     int rc = mosquitto_reconnect_delay_set(client, 1, 10, true);
-    if (rc == MOSQ_ERR_SUCCESS) {
+    if (rc == MOSQ_ERR_SUCCESS && (BMB_MQTT_RAW_TOPICS || BMB_MQTT_SPLIT_TOPICS)) {
         rc = mosquitto_will_set(client, MQTT_LOCAL_STATUS_TOPIC.c_str(), strlen(lwt), lwt, 0, true);
     }
     if (rc == MOSQ_ERR_SUCCESS && !BMB_MQTT_LOCAL_USER.empty()) {
@@ -814,7 +816,10 @@ int main() try {
         BMB_MQTT_LOCAL_PREFIX.push_back('/');       // just for protection
     }
     MQTT_LOCAL_STATUS_TOPIC = BMB_MQTT_LOCAL_PREFIX + "status";
-    std::cerr << "[bridge] using status topic: " << MQTT_LOCAL_STATUS_TOPIC << "\n";
+    if (BMB_MQTT_RAW_TOPICS || BMB_MQTT_SPLIT_TOPICS)
+        std::cerr << "[bridge] using status topic: " << MQTT_LOCAL_STATUS_TOPIC << "\n";
+    else
+        std::cerr << "[bridge] status topic disabled (RAW and split topics disabled)\n";
 
     BMB_BMW_STATUS_STABLE_DELAY = env_int("BMB_BMW_STATUS_STABLE_DELAY", 5);
     if (BMB_BMW_STATUS_STABLE_DELAY < 0) BMB_BMW_STATUS_STABLE_DELAY = 0;

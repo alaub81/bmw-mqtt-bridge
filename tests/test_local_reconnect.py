@@ -33,6 +33,8 @@ static std::atomic<bool> g_local_connected{false}, g_stop{false};
 static std::string BMB_MQTT_LOCAL_CLIENT_ID = "bmw5-bridge", MQTT_LOCAL_STATUS_TOPIC = "bmw5/status";
 static std::string BMB_MQTT_LOCAL_USER = "user", BMB_MQTT_LOCAL_PASSWORD = "password", BMB_MQTT_LOCAL_HOST = "mqtt.test";
 static int BMB_MQTT_LOCAL_PORT = 8883;
+static int BMB_MQTT_RAW_TOPICS = 1, BMB_MQTT_SPLIT_TOPICS = 0;
+static int will_calls = 0;
 constexpr int MOSQ_ERR_SUCCESS = 0, MOSQ_ERR_NO_CONN = 4;
 static int created = 0, destroyed = 0, connect_calls = 0, tls_calls = 0, publish_calls = 0;
 static int connect_result = 0, loop_result = 0;
@@ -67,6 +69,7 @@ int mosquitto_reconnect_delay_set(mosquitto*, int minimum, int maximum, bool bac
 }
 int mosquitto_will_set(mosquitto*, const char* topic, size_t size,
                        const void* payload, int qos, bool retain) {
+    ++will_calls;
     assert(std::string(topic) == MQTT_LOCAL_STATUS_TOPIC && qos == 0 && retain);
     assert(std::string(static_cast<const char*>(payload), size) == "{\"connected\":false}");
     return 0;
@@ -113,7 +116,15 @@ int mosquitto_publish(mosquitto* client, int*, const char* topic, size_t size,
 int main(int argc, char** argv) {
     const std::string scenario = argv[1];
     const auto start = std::chrono::steady_clock::time_point{};
-    if (scenario == "stalled-loop") {
+    if (scenario == "output-modes") {
+        for (int raw : {0, 1}) for (int split : {0, 1}) {
+            BMB_MQTT_RAW_TOPICS = raw;
+            BMB_MQTT_SPLIT_TOPICS = split;
+            will_calls = 0;
+            assert(restart_local_client());
+            assert(will_calls == (raw || split ? 1 : 0));
+        }
+    } else if (scenario == "stalled-loop") {
         assert(restart_local_client());
         check_local_connection(start);
         check_local_connection(start + std::chrono::seconds(29));
@@ -189,7 +200,7 @@ int main(int argc, char** argv) {
         cls.temp.cleanup()
 
     def test_MQTT_LOCAL_recovery_and_client_replacement(self):
-        for scenario in ('stalled-loop', 'automatic-reconnect', 'allocation-failure',
+        for scenario in ('output-modes', 'stalled-loop', 'automatic-reconnect', 'allocation-failure',
                          'connect-failure', 'loop-failure', 'tls-failure',
                          'concurrent-publishing', 'shutdown', 'generated-id'):
             with self.subTest(scenario=scenario):

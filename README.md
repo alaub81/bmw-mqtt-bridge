@@ -141,7 +141,7 @@ docker compose logs -f bmw-mqtt-bridge
 
 Follow the BMW login instructions shown by the authentication helper. Tokens
 persist in the volume; subsequent starts do not require authentication while
-they remain valid. Connection status is published to `bmw/status`.
+they remain valid. Connection status is published to `bmw/status` when RAW or split topics are enabled.
 
 This minimal configuration omits the Docker healthcheck. For the full configuration
 including health monitoring, copy `docker-compose.example.yml` to
@@ -742,7 +742,7 @@ To ensure Home Assistant and other clients immediately see the last known state 
 - `bmw/<VIN>/<eventName>` (Legacy)
 - `bmw/vehicles/<VIN>/<propertyName>` (when `BMB_MQTT_SPLIT_TOPICS=1`)
 
-The **status topic** `bmw/status` is always retained (LWT), regardless of this setting, to keep availability tracking consistent.
+The **status topic** `bmw/status` is published only when `BMB_MQTT_RAW_TOPICS=1` or `BMB_MQTT_SPLIT_TOPICS=1`. When enabled, it is always retained (including its LWT), regardless of the retain setting. With both outputs disabled, no bridge status, LWT, or shutdown message is published on this topic; Homie uses its own per-device `$state`. Previously retained status messages remain on the broker until explicitly cleared.
 
 ### Enable
 
