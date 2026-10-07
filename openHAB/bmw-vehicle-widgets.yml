@@ -289,17 +289,19 @@ widgets:
           description: 'Homie telemetry#last-update: Empfangszeit der Bridge, kein Messzeitpunkt
             jedes einzelnen Werts.'
         - name: lockedState
-          label: 'Zustand: verriegelt'
+          label: 'Zustände: verriegelt'
           type: TEXT
-          default: 'ON'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: 'Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung
+            beachten. Ohne eigene Zuordnung: ON.'
         - name: unlockedState
-          label: 'Zustand: entriegelt'
+          label: 'Zustände: entriegelt'
           type: TEXT
-          default: 'OFF'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: 'Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung
+            beachten. Ohne eigene Zuordnung: OFF.'
         - name: chargingState
           label: 'Zustände: lädt'
           type: TEXT
@@ -454,17 +456,13 @@ widgets:
                               default:
                                 - component: Label
                                   config:
-                                    text: '=fn.state(props.lockItem) === (props.lockedState
-                                      || ''ON'') ? ''Zuletzt: verriegelt'' : fn.state(props.lockItem)
-                                      === (props.unlockedState || ''OFF'') ? ''Zuletzt: offen''
+                                    text: '=[].concat(props.lockedState || ''ON'').indexOf(fn.state(props.lockItem)) >= 0 ? ''Zuletzt: verriegelt'' : [].concat(props.unlockedState || ''OFF'').indexOf(fn.state(props.lockItem)) >= 0 ? ''Zuletzt: offen''
                                       : ''Verriegelung unbekannt'''
                                     style:
                                       white-space: normal
                                       overflow-wrap: anywhere
                                       font-size: 13px
-                                      color: '=fn.state(props.lockItem) === (props.lockedState
-                                        || ''ON'') ? ''var(--f7-color-green)'' : fn.state(props.lockItem)
-                                        === (props.unlockedState || ''OFF'') ? ''var(--f7-color-orange)''
+                                      color: '=[].concat(props.lockedState || ''ON'').indexOf(fn.state(props.lockItem)) >= 0 ? ''var(--f7-color-green)'' : [].concat(props.unlockedState || ''OFF'').indexOf(fn.state(props.lockItem)) >= 0 ? ''var(--f7-color-orange)''
                                         : ''var(--f7-list-item-footer-text-color)'''
                                       max-width: 100%
                                     visible: =!!props.lockItem
@@ -1424,17 +1422,19 @@ widgets:
           description: 'Homie telemetry#last-update: Empfangszeit der Bridge, kein Messzeitpunkt
             jedes einzelnen Werts.'
         - name: lockedState
-          label: 'Zustand: verriegelt'
+          label: 'Zustände: verriegelt'
           type: TEXT
-          default: 'ON'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: 'Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung
+            beachten. Ohne eigene Zuordnung: ON.'
         - name: unlockedState
-          label: 'Zustand: entriegelt'
+          label: 'Zustände: entriegelt'
           type: TEXT
-          default: 'OFF'
+          multiple: true
           groupName: status
-          description: Exakter Rohzustand des Items; Groß-/Kleinschreibung beachten.
+          description: 'Mehrere exakte Rohzustände einzeln hinterlegen; Groß-/Kleinschreibung
+            beachten. Ohne eigene Zuordnung: OFF.'
         - name: chargingState
           label: 'Zustände: lädt'
           type: TEXT

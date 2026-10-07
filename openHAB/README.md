@@ -103,7 +103,7 @@ unbekannt. Bei doppelt zugeordneten Zuständen hat angeschlossen Vorrang.
 | `rangeItem`, `electricRangeItem`, `mileageItem` | Kilometer, z. B. `312` oder `312 km` |
 | `chargeRemainingItem` | Minuten, z. B. `24` oder `24 min` |
 | `chargingPowerItem` | Watt oder Kilowatt, z. B. `7200 W` oder `7.2 kW` |
-| `lockItem` | Standard: `ON` verriegelt, `OFF` entriegelt; konfigurierbar |
+| `lockItem` | Standard: `ON` verriegelt, `OFF` entriegelt; mehrere Zustände konfigurierbar |
 | `chargingItem` | Standard: `ON` lädt, `OFF` lädt nicht; mehrere Zustände konfigurierbar |
 | `windowItems`, `doorItems` | Mehrfachauswahl der einzelnen Fenster bzw. Türen und des Kofferraums; Switch, Contact oder String |
 | `openingsItem` (Fallback) | `ON`: mindestens eine überwachte Öffnung offen; `OFF`: alle überwachten Öffnungen zu |
@@ -261,3 +261,18 @@ notChargingState: [NOCHARGING, FINISHED]
 
 Die Standardzuordnung bleibt `ON` / `OFF`. Bestehende Konfigurationen mit
 einem einzelnen Textwert funktionieren weiterhin.
+
+## Mehrere Verriegelungszustände
+
+Auch **Zustände: verriegelt** (`lockedState`) und **Zustände: entriegelt**
+(`unlockedState`) unter **Status** erlauben mehrere Rohzustände als einzelne
+Einträge. Ohne eigene Zuordnung gelten weiterhin `ON` und `OFF`. Bestehende
+Einzelwerte funktionieren weiterhin.
+
+```yaml
+lockedState: [LOCKED, SECURED]
+unlockedState: [UNLOCKED, UNSECURED]
+```
+
+Damit unterstützen alle Zustandszuordnungen mehrere Werte: Verriegelung,
+Ladestatus, Ladekabel sowie Fenster, Türen und Kofferraum.
