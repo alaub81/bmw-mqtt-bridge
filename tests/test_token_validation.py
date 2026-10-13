@@ -23,7 +23,7 @@ class TokenValidationTests(unittest.TestCase):
         cls.base = Path(cls.temp.name)
         source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
         callback = source[source.index('static size_t curl_write_cb('):].split('// ===================== MQTT Callbacks')[0]
-        refresh = source[source.rindex('static bool refresh_tokens() {'):]
+        refresh = source[source.rindex('static token_validation::Tokens fetch_and_store_tokens() {'):]
         options = sorted(set(re.findall(r'CURLOPT_[A-Z_]+', refresh)))
         harness = r'''
 #include <atomic>
@@ -38,9 +38,12 @@ class TokenValidationTests(unittest.TestCase):
 #include <vector>
 #include "bridge_log.hpp"
 #include "token_validation.hpp"
+#include "async_job.hpp"
 struct CURL {};
 struct curl_slist {};
 using CURLcode = int;
+using curl_off_t = long long;
+static std::atomic<bool> g_stop{false};
 constexpr int CURLE_OK = 0, CURLINFO_RESPONSE_CODE = 0;
 static CURL handle;
 static curl_slist headers;
@@ -71,6 +74,20 @@ int main(int argc, char** argv) {
     const std::string mode = argv[1];
     std::ifstream file(argv[2]);
     response = std::string(std::istreambuf_iterator<char>(file), {});
+    if (mode == "worker-refresh") {
+        AsyncJob<token_validation::Tokens> job;
+        assert(job.start(fetch_and_store_tokens));
+        const auto tokens = job.finish();
+        assert(tokens && tokens->expires > time(nullptr) && writes.size() == 3);
+        assert(g_id_token == "previous-id" && g_id_token_exp == 100); // Worker never changes active credentials.
+        return 0;
+    }
+    if (mode == "cancel-callback") {
+        assert(refresh_cancel_cb(nullptr, 0, 0, 0, 0) == 0);
+        g_stop = true;
+        assert(refresh_cancel_cb(nullptr, 0, 0, 0, 0) == 1);
+        return 0;
+    }
     if (mode == "expiry") {
         std::cout << token_validation::expiration(response) << '\n';
         return 0;
@@ -153,6 +170,12 @@ int main(int argc, char** argv) {
 
     def test_valid_refresh_updates_memory_and_all_token_files(self):
         self.run_case('valid', json.dumps(self.valid_response()))
+
+    def test_refresh_worker_returns_owned_tokens_without_changing_active_credentials(self):
+        self.run_case('worker-refresh', json.dumps(self.valid_response()))
+
+    def test_http_progress_callback_cancels_on_shutdown(self):
+        self.run_case('cancel-callback', '')
 
     def test_http_error_and_invalid_current_refresh_do_not_expose_response_body(self):
         for mode in ('http-error', 'bad-refresh-file'):

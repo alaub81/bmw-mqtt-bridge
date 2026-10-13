@@ -10,6 +10,7 @@
 #include <sstream>
 #include "homie_names.hpp"
 #include "bridge_log.hpp"
+#include "async_job.hpp"
 
 // Homie 4 needs one MQTT connection (and therefore one Last Will) per device.
 // Ingest runs on the BMW callback thread; all registry and client management runs
@@ -33,6 +34,7 @@ class HomiePublisher {
         bool timestamp_dirty = false;
         std::string state;
         std::string last_update;
+        size_t schema_generation = 0;
         std::chrono::steady_clock::time_point last_online{};
         std::mutex ack_mutex;
         std::condition_variable ack_condition;
@@ -53,6 +55,9 @@ class HomiePublisher {
     bool cache_dirty = false;
     bool cache_schema_dirty = false;
     bool cache_retry_pending = false;
+    AsyncJob<bool> cache_job;
+    size_t cache_generation = 0, snapshot_generation = 0, durable_generation = 0;
+    size_t schema_generation = 0;
     std::chrono::seconds cache_interval;
     std::chrono::steady_clock::time_point last_cache_attempt = std::chrono::steady_clock::now();
 
@@ -292,17 +297,46 @@ class HomiePublisher {
             devices = std::move(restored);
             cache_dirty = version < 3;
             cache_schema_dirty = cache_dirty;
+            if (cache_dirty) {
+                cache_generation = schema_generation = 1;
+                for (auto& [vin, d] : devices) d->schema_generation = 1;
+            }
             BMB_LOG(info) << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
             BMB_LOG(warning) << "[homie] cannot load field cache: " << e.what() << '\n';
         }
     }
-    void save(std::chrono::steady_clock::time_point now, bool force = false) {
+    void cache_changed(bool schema) {
+        cache_dirty = true;
+        ++cache_generation;
+        if (schema) {
+            cache_schema_dirty = true;
+            schema_generation = cache_generation;
+        }
+    }
+    void cache_completed(bool success, std::chrono::steady_clock::time_point now) {
+        last_cache_attempt = now;
+        if (success) {
+            durable_generation = snapshot_generation;
+            cache_dirty = cache_generation != snapshot_generation;
+            cache_schema_dirty = schema_generation > snapshot_generation;
+            cache_retry_pending = false;
+        } else {
+            cache_retry_pending = true;
+            BMB_LOG_THROTTLED(error) << "[homie] cannot save field cache\n";
+        }
+    }
+    void save(std::chrono::steady_clock::time_point now) {
+        if (auto completed = cache_job.poll()) cache_completed(*completed, now);
+        if (cache_job.running()) return;
         if (!cache_dirty) return;
         // Schema additions/migrations are durable immediately. Value/receipt
         // updates are checkpointed; failed saves retry at the same interval.
-        if (!force && now - last_cache_attempt < cache_interval && (!cache_schema_dirty || cache_retry_pending)) return;
+        if (now - last_cache_attempt < cache_interval && (!cache_schema_dirty || cache_retry_pending)) return;
         last_cache_attempt = now;
+        start_cache_save();
+    }
+    void start_cache_save() {
         json vehicles = json::object();
         json legacy_ids = json::object();
         json last_updates = json::object();
@@ -313,14 +347,14 @@ class HomiePublisher {
             if (!d->legacy_ids.empty()) legacy_ids[vin] = d->legacy_ids;
             if (!d->last_update.empty()) last_updates[vin] = d->last_update;
         }
-        if (write_file_atomic(cache_path, json{{"version", 3}, {"vehicles", vehicles},
-                                              {"legacy_ids", legacy_ids}, {"last_updates", last_updates}}.dump())) {
-            cache_dirty = false;
-            cache_schema_dirty = false;
-            cache_retry_pending = false;
-        } else {
+        json snapshot{{"version", 3}, {"vehicles", std::move(vehicles)},
+                      {"legacy_ids", std::move(legacy_ids)}, {"last_updates", std::move(last_updates)}};
+        snapshot_generation = cache_generation;
+        // The worker owns immutable data; it never accesses devices or MQTT.
+        if (!cache_job.start([path = cache_path, snapshot = std::move(snapshot)] {
+            return write_file_atomic(path, snapshot.dump());
+        })) {
             cache_retry_pending = true;
-            BMB_LOG_THROTTLED(error) << "[homie] cannot save field cache\n";
         }
     }
 
@@ -390,18 +424,20 @@ public:
                 d.properties[id] = std::move(p);
                 if (new_property) d.property_ids.emplace(name, id);
                 d.dirty |= schema_changed;
-                cache_dirty |= value_changed;
-                cache_schema_dirty |= schema_changed;
+                if (value_changed) cache_changed(schema_changed);
+                if (schema_changed) d.schema_generation = cache_generation;
                 // Values are sent after the schema below, even for first sightings.
                 if (value_changed) d.changed_values.insert(id);
                 accepted = true;
             }
             if (accepted) {
                 auto& d = device(vin);
-                if (d.last_update.empty()) d.dirty = true;
+                const bool first_receipt = d.last_update.empty();
+                if (first_receipt) d.dirty = true;
                 if (d.last_update != received_at) {
                     d.timestamp_dirty = true;
-                    cache_dirty = true;
+                    cache_changed(first_receipt);
+                    if (first_receipt) d.schema_generation = cache_generation;
                 }
                 d.last_update = received_at;
             }
@@ -418,6 +454,9 @@ public:
                 start_client(d);
             }
             if (!d.connected) continue;
+            // Keep new IDs durable before announcing them. Existing schema and
+            // value publishing can continue while a routine checkpoint is slow.
+            if (d.schema_generation > durable_generation) continue;
             const bool resend = d.resend.exchange(false);
             if (d.dirty || resend || !d.changed_values.empty() || d.timestamp_dirty) {
                 // Full replay also recovers from a broker losing its retained store.
@@ -456,8 +495,15 @@ public:
             }
         }
     }
+    void wait_for_cache(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        if (auto completed = cache_job.finish()) cache_completed(*completed, now);
+    }
     void shutdown() {
-        save(std::chrono::steady_clock::now(), true);
+        wait_for_cache();
+        if (cache_dirty) {
+            start_cache_save();
+            wait_for_cache();
+        }
         for (auto& [vin, entry] : devices) {
             auto& d = *entry;
             bool acknowledged = false;

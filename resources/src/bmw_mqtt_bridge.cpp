@@ -103,8 +103,10 @@
 using json = nlohmann::json;
 #include "bridge_log.hpp"
 #include "token_validation.hpp"
+#include "async_job.hpp"
 
 static bool refresh_tokens();
+static token_validation::Tokens fetch_and_store_tokens();
 static mosquitto* create_bmw_client();
 
 // ---------------------- tiny helpers for env config ----------------------
@@ -439,6 +441,11 @@ static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* userdata
     if (s->size() > maximum_response - bytes) return 0;
     s->append(static_cast<const char*>(ptr), bytes);
     return bytes;
+}
+
+// libcurl invokes this on its worker thread; no MQTT or token globals are changed.
+static int refresh_cancel_cb(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    return g_stop.load() ? 1 : 0;
 }
 
 // ===================== MQTT Callbacks =====================
@@ -888,6 +895,8 @@ int main() try {
     BMB_LOG(info) << "[bridge] running… (Ctrl+C / SIGTERM to stop)\n";
 
     // Token refresh and MQTT downtime watchdogs.
+    AsyncJob<token_validation::Tokens> refresh_job;
+    auto token_reconnect_after = std::chrono::steady_clock::time_point{};
     long last_refresh_attempt = 0;
     long last_successful_refresh = time(nullptr);
     constexpr long SOFT_MARGIN_SECS = 10*60;   // refresh 10 min before exp
@@ -927,8 +936,30 @@ int main() try {
         previous_local_connected = local_connected;
         previous_bmw_connected = bmw_connected;
 
+        // Only the main thread adopts credentials and manages MQTT clients.
+        if (auto tokens = refresh_job.poll()) {
+            last_refresh_attempt = now;
+            if (tokens->expires > now) {
+                g_id_token = std::move(tokens->id);
+                g_id_token_exp = tokens->expires;
+                last_successful_refresh = now;
+                g_connected = false;
+                token_reconnect_after = heartbeat_now + std::chrono::milliseconds(1500 + rng() % 500);
+                extend_bmw_backoff(2);
+            } else {
+                extend_bmw_backoff(15);
+                BMB_LOG(warning) << "[bridge] refresh failed, retry soon\n";
+            }
+        }
         check_local_connection(heartbeat_now);
-        check_bmw_connection(heartbeat_now);
+        if (token_reconnect_after != std::chrono::steady_clock::time_point{}) {
+            if (heartbeat_now >= token_reconnect_after && !bmw_backoff_active()) {
+                if (bmw_full_reconnect()) token_reconnect_after = {};
+                else token_reconnect_after = heartbeat_now + std::chrono::seconds(30);
+            }
+        } else {
+            check_bmw_connection(heartbeat_now);
+        }
         publish_status();
 
         if (g_homie) g_homie->tick(g_connected.load());
@@ -938,37 +969,26 @@ int main() try {
 
         bool due_soft = needs_soft_refresh(now);
         bool due_hard = needs_hard_refresh(now);
-        bool should_try = (due_soft || due_hard) && (now - last_refresh_attempt > 10);
+        const bool should_try = !refresh_job.running() &&
+            token_reconnect_after == std::chrono::steady_clock::time_point{} &&
+            (due_soft || due_hard) && (now - last_refresh_attempt > 10);
 
-        if (should_try){
-            // small jitter to avoid sync with other processes
-            std::this_thread::sleep_for(std::chrono::milliseconds(100 + (rng() % 200)));
-
+        if (should_try) {
+            const auto jitter = std::chrono::milliseconds(100 + rng() % 200);
+            last_refresh_attempt = now;
             BMB_LOG(info) << "[bridge] token refresh (" << (due_soft ? "soft" : "hard") << ")\n";
-
-            if (refresh_tokens()){
-                last_refresh_attempt    = now;
-                last_successful_refresh = now;
-
-                g_connected = false;
-                publish_status();
-
-                // Pause briefly before reconnecting with the new token.
-                long delay_ms = 1500 + (rng()%500);
-                extend_bmw_backoff(1);
-                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-
-                // Rebuild after joining the old thread to replace credentials safely.
-                bmw_full_reconnect();
-            } else {
-                last_refresh_attempt = now;
+            if (!refresh_job.start([jitter] {
+                std::this_thread::sleep_for(jitter);
+                if (g_stop) return token_validation::Tokens{};
+                return fetch_and_store_tokens();
+            })) {
                 extend_bmw_backoff(15);
-                BMB_LOG(warning) << "[bridge] refresh failed, retry soon\n";
             }
         }
     }
 
     // Cleanup
+    refresh_job.finish(); // Join/cancel HTTP work before library cleanup or cache shutdown.
     if (!heartbeat_path.empty()) std::remove(heartbeat_path.c_str());
     if (g_bmw) {
         mosquitto_loop_stop(g_bmw, true);
@@ -1086,7 +1106,7 @@ static bool write_file_atomic(const std::string& final_path,
     return true;
 }
 
-static bool refresh_tokens() {
+static token_validation::Tokens fetch_and_store_tokens() {
 
     BMB_LOG(info) << "[bridge] refresh started\n";
 
@@ -1094,7 +1114,7 @@ static bool refresh_tokens() {
     std::string cur_refresh = trim(read_file(REFRESH_TOKEN_FILE));
     if (!token_validation::valid_token(cur_refresh)) {
         BMB_LOG(error) << "[bridge] refresh: refresh_token.txt missing or invalid\n";
-        return false;
+        return {};
     }
 
     // form body
@@ -1112,7 +1132,7 @@ static bool refresh_tokens() {
     CURL* c = curl_easy_init();
     if(!c){
         BMB_LOG(error) << "[bridge] curl_easy_init failed\n";
-        return false;
+        return {};
     }
 
     struct curl_slist* hdrs = nullptr;
@@ -1129,6 +1149,8 @@ static bool refresh_tokens() {
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L); // threadsafe timeouts
+    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, refresh_cancel_cb);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(c, CURLOPT_USERAGENT, "bmw-mqtt-bridge/1.0");
@@ -1138,7 +1160,7 @@ static bool refresh_tokens() {
         BMB_LOG(error) << "[bridge] curl perform failed: " << curl_easy_strerror(rc) << "\n";
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(c);
-        return false;
+        return {};
     }
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
 
@@ -1147,13 +1169,13 @@ static bool refresh_tokens() {
 
     if (http_code != 200) {
         BMB_LOG(error) << "[bridge] refresh HTTP status=" << http_code << " (response body omitted)\n";
-        return false;
+        return {};
     }
 
     token_validation::Tokens tokens;
     if (!token_validation::parse_response(resp, tokens)) {
         BMB_LOG(error) << "[bridge] refresh: invalid token response or expired JWT (response body omitted)\n";
-        return false;
+        return {};
     }
 
     // Write tokens atomically in their target directory.
@@ -1165,17 +1187,23 @@ static bool refresh_tokens() {
 
     if (!ok) {
         BMB_LOG(error) << "[bridge] writing tokens atomically failed\n";
-        return false;
+        return {};
     }
-
-    // update in-memory
-    g_id_token      = tokens.id;
-    g_id_token_exp  = tokens.expires;
 
     BMB_LOG(info) << "✔ New Tokens saved:\n"
               << "   id_token.txt, refresh_token.txt, access_token.txt\n";
-    BMB_LOG(info) << "[bridge] token refreshed via HTTP, exp=" << g_id_token_exp
-              << " (in " << (g_id_token_exp.load() - time(nullptr)) << "s)\n";
+    BMB_LOG(info) << "[bridge] token refreshed via HTTP, exp=" << tokens.expires
+              << " (in " << (tokens.expires - time(nullptr)) << "s)\n";
 
+    return tokens;
+}
+
+
+// Startup has no running main loop yet, so it can obtain the initial token synchronously.
+static bool refresh_tokens() {
+    auto tokens = fetch_and_store_tokens();
+    if (tokens.expires <= time(nullptr)) return false;
+    g_id_token = std::move(tokens.id);
+    g_id_token_exp = tokens.expires;
     return true;
 }

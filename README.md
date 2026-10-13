@@ -55,6 +55,7 @@ bmw-mqtt-bridge/
 ├── resources/
 │   ├── src/
 │   │   ├── bmw_mqtt_bridge.cpp
+│   │   ├── async_job.hpp
 │   │   ├── bridge_log.hpp
 │   │   ├── token_validation.hpp
 │   │   ├── homie_publisher.hpp
@@ -468,7 +469,7 @@ Validation on startup:
 | `BMB_BMW_HEARTBEAT_FILE` | `/tmp/bmw-mqtt-bridge-heartbeat` | Default heartbeat path shared by the main loop and Compose healthcheck. Optional container environment override. |
 | `BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
 | `BMB_LOG_LEVEL` | `info` | Minimum log severity: `debug`, `info`, `warning` or `error` (case insensitive). Telemetry payloads are logged only at `debug`. |
-| `BMB_HOMIE_CACHE_INTERVAL` | `60` | Seconds between Homie value/receipt cache checkpoints, from `1` to `86400`. Schema changes and clean shutdown save immediately. |
+| `BMB_HOMIE_CACHE_INTERVAL` | `60` | Seconds between Homie value/receipt cache checkpoints, from `1` to `86400`. Schema changes start an immediate background save; clean shutdown waits for a final save. |
 | `BMB_HOMIE_QUEUE_LIMIT` | `1024` | Maximum valid Homie messages waiting for the main loop, from `1` to `65536`. Overflow drops the oldest waiting message and logs a warning. |
 
 The default Compose file omits both path variables. The application,
@@ -542,8 +543,7 @@ the MQTT callback's lifetime. Homie-only output skips the split-field loop; when
 all telemetry outputs are disabled, the callback returns without parsing payloads.
 
 Homie pending updates use a bounded FIFO queue (`BMB_HOMIE_QUEUE_LIMIT`, default:
-1,024 messages). This prevents unlimited backlog while token refresh or persistence
-blocks the main loop. Invalid VINs and messages without a valid non-empty field
+1,024 messages). This prevents unlimited backlog during slow main-loop processing or update bursts. Invalid VINs and messages without a valid non-empty field
 are ignored before enqueueing and cannot evict valid updates.
 
 When full, the queue drops the oldest waiting message to accept the newest one.
@@ -560,6 +560,30 @@ the next batch. Normal FIFO processing preserves first-seen property ID assignme
 and schema changes. Per-field coalescing was evaluated and deferred because it can
 discard schema transitions or alter collision assignment; Homie continues to publish
 the final state per tick as before.
+
+### Background refresh and persistence
+
+During normal operation, token HTTP refresh and synchronous token-file flushes run
+in a single background job. The main loop continues heartbeat updates, local MQTT
+supervision and Homie processing. Only the main thread adopts the returned token
+and rebuilds the BMW client after a non-blocking reconnect delay. BMW reconnect
+backoff still applies; one refresh at a time prevents overlapping token rotations.
+Obtaining an initial valid token at startup remains synchronous, before MQTT loops
+start. No extra thread is kept awake when there is no background work.
+
+Homie cache serialization and file/directory flushes also run as one background
+job with an owned snapshot. Generation tracking prevents an older completed write
+from clearing newer pending changes. New or migrated schema IDs are announced only
+after their snapshot is durable. When the cache volume is unavailable, existing
+schema values can still be published, but new schema announcements wait for a
+successful save. Cache retries retain the configured interval.
+
+Shutdown requests HTTP cancellation through libcurl's progress callback, joins
+refresh work before library cleanup, and waits for cache persistence. DNS/connection
+phases may still take up to the HTTP timeout (20 seconds); disk writes cannot be
+cancelled safely. The full Compose examples allow 30 seconds for a normal stop.
+Increase that grace period for unusually slow storage or many Homie devices.
+Forced termination can still lose uncheckpointed cache updates as documented above.
 
 ## MQTT topics
 
@@ -578,8 +602,8 @@ CONNACK triggers a fresh status message. Logs with `[local/log]` expose local
 MQTT connection attempts and TLS/network errors; watchdog rebuilds are logged
 as `local MQTT disconnected for 30s; rebuilding client`.
 
-The watchdog runs in the main loop, so blocking token refresh or other main-loop
-work can delay a check. Vehicle messages received while the local connection is
+The watchdog runs in the main loop. Runtime token refresh and cache writes run in
+background jobs; other slow main-loop work can still delay a check. Vehicle messages received while the local connection is
 unavailable are not buffered or replayed. The Docker healthcheck measures both
 process liveness and prolonged outages of either MQTT connection.
 
@@ -785,10 +809,14 @@ MQTT reconnects continue to publish the complete description and all cached valu
 The complete field registry and last values are saved atomically in
 `/app/token/homie-cache.json` in the existing volume, and replayed after a bridge
 restart or Homie MQTT reconnect. New fields, type/unit changes and cache migrations
-are saved immediately. Value and receipt timestamp changes are collected in RAM
+start an immediate background save. Their descriptions are announced only after
+the corresponding cache generation has been saved successfully. Value and receipt
+timestamp changes are collected in RAM
 and saved every `BMB_HOMIE_CACHE_INTERVAL` seconds (default: 60), when dirty.
 An idle bridge does not rewrite its cache. Failed saves retry after the same
-interval while MQTT publication continues; clean shutdown attempts a final save.
+interval. Existing-schema value publication continues during slow or failed writes;
+new schemas wait for durability. Clean shutdown waits for any active write and
+attempts a final save of newer changes.
 
 An abrupt process or host failure can lose value/receipt updates since the last
 successful checkpoint, normally up to the configured interval. Disk failures can
@@ -1038,7 +1066,8 @@ The separate CI job **Offline regression tests** invokes exactly
 environment-only configuration, GHCR image selection and shared development settings,
 token response validation, permissions and atomic writes, BMW server backoff
 and library reconnect suppression, TLS settings,
-MQTT status and shutdown handling, JWT/refresh validation and response limits,
+MQTT status and shutdown handling, background job completion and snapshot generations,
+JWT/refresh validation and response limits,
 log levels and repeat suppression, Homie deltas/checkpoints/failure retries, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with

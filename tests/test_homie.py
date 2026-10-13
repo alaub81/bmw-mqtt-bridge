@@ -42,6 +42,9 @@ static std::vector<mosquitto*> clients;
 static std::vector<std::pair<std::string, std::string>> messages, wills;
 static int destroyed = 0, tls_calls = 0, failure = 0, cache_writes = 0;
 static bool cache_failure = false;
+static std::mutex disk_mutex;
+static std::condition_variable disk_condition;
+static bool block_disk = false, disk_started = false, release_disk = false;
 static bool connect_now = true;
 static std::string BMB_MQTT_LOCAL_HOST = "broker.test", BMB_MQTT_LOCAL_USER = "user", BMB_MQTT_LOCAL_PASSWORD = "secret";
 static int BMB_MQTT_LOCAL_PORT = 8883;
@@ -96,6 +99,14 @@ int mosquitto_publish(mosquitto* c, int* mid, const char* topic, int size, const
     return 0;
 }
 static bool write_file_atomic(const std::string& path, const std::string& content) {
+    {
+        std::unique_lock<std::mutex> lock(disk_mutex);
+        if (block_disk) {
+            disk_started = true;
+            disk_condition.notify_all();
+            disk_condition.wait(lock, [] { return release_disk; });
+        }
+    }
     ++cache_writes;
     if (cache_failure) return false;
     std::ofstream out(path); out << content; return out.good();
@@ -120,6 +131,14 @@ static std::string latest(const std::string& topic) {
         if (it->first == topic) return it->second;
     return "<missing>";
 }
+// Existing scenarios wait deterministically for durability; the async-cache
+// scenario below deliberately calls tick directly while its writer is blocked.
+static void tick_and_wait(HomiePublisher& publisher, bool connected,
+                          std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+    publisher.tick(connected, now);
+    publisher.wait_for_cache(now);
+    publisher.tick(connected, now);
+}
 int main(int argc, char** argv) {
     const std::string scenario = argv[1], cache = argv[2];
     const std::string vin = "WBY8P610007L21042", key = "vehicle.drivetrain.electricEngine.charging.smeEnergyDeltaFullyCharged";
@@ -127,7 +146,50 @@ int main(int argc, char** argv) {
     active_cache = cache;
     HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60),
                              scenario == "queue-limit" || scenario == "queue-concurrent" ? 2 : 1024);
-    if (scenario == "queue-limit") {
+    if (scenario == "async-cache") {
+        tick_and_wait(publisher, true);
+        publisher.ingest(vin, field); tick_and_wait(publisher, true);
+        assert(latest(base + "$state") == "ready");
+        const auto clock = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(disk_mutex);
+            block_disk = true;
+        }
+        publisher.ingest(vin, {{key, {{"value", 2}, {"unit", "kWh"}}}});
+        publisher.tick(true, clock + std::chrono::seconds(61));
+        {
+            std::unique_lock<std::mutex> lock(disk_mutex);
+            assert(disk_condition.wait_for(lock, std::chrono::seconds(5), [] { return disk_started; }));
+        }
+        publisher.ingest(vin, {{key, {{"value", 3}, {"unit", "kWh"}}}});
+        publisher.tick(true, clock + std::chrono::seconds(62));
+        assert(latest(base + "telemetry/" + id(key)) == "3"); // Existing values continue while disk is blocked.
+        publisher.ingest(vin, {{"vehicle.newField", {{"value", true}}}});
+        publisher.tick(true, clock + std::chrono::seconds(63));
+        assert(latest(base + "telemetry/newField") == "<missing>"); // New IDs wait for durability.
+        {
+            std::lock_guard<std::mutex> lock(disk_mutex);
+            release_disk = true;
+            block_disk = false;
+        }
+        disk_condition.notify_all();
+        publisher.wait_for_cache(clock + std::chrono::seconds(63));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(64));
+        assert(latest(base + "telemetry/newField") == "true");
+        assert(cache_writes == 3); // Old completion must not clear a newer dirty/schema generation.
+        json saved;
+        { std::ifstream input(cache); input >> saved; }
+        assert(saved.at("vehicles").at(vin).at(key).at("value") == "3");
+        cache_failure = true;
+        publisher.ingest(vin, {{key, {{"value", 4}, {"unit", "kWh"}}}});
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(130));
+        assert(latest(base + "telemetry/" + id(key)) == "4" && cache_writes == 4);
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(131));
+        assert(cache_writes == 4);
+        cache_failure = false;
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(190));
+        assert(cache_writes == 5);
+    } else if (scenario == "queue-limit") {
         for (size_t limit : {size_t(0), size_t(65537)}) {
             bool rejected = false;
             try { HomiePublisher invalid(cache, std::chrono::seconds(60), limit); }
@@ -138,7 +200,7 @@ int main(int argc, char** argv) {
         publisher.ingest(vin, {{"vehicle.queue.oldOnly", {{"value", 1}}}}, receipt);
         publisher.ingest(vin, {{"vehicle.queue.partialKeep", {{"value", 2}}}}, receipt + std::chrono::seconds(1));
         publisher.ingest(vin, {{"vehicle.queue.latest", {{"value", 3}}}}, receipt + std::chrono::seconds(2));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/queueOldOnly") == "<missing>");
         assert(latest(base + "telemetry/queuePartialKeep") == "2");
         assert(latest(base + "telemetry/queueLatest") == "3");
@@ -148,12 +210,12 @@ int main(int argc, char** argv) {
         publisher.ingest(vin, {{"empty", {{"value", ""}}}}, receipt + std::chrono::seconds(5));
         publisher.ingest(vin, {{"null", {{"value", nullptr}}}}, receipt + std::chrono::seconds(6));
         publisher.ingest("invalid", field, receipt + std::chrono::seconds(7));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/queueLatest") == "4" && latest(base + "telemetry/queuePartialKeep") == "5");
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.000Z");
         for (int i = 0; i < 1000; ++i)
             publisher.ingest(vin, {{"vehicle.queue.latest", {{"value", i}}}}, receipt + std::chrono::seconds(10 + i));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/queueLatest") == "999");
         assert(latest(base + "telemetry/queuePartialKeep") == "5");
         json persisted;
@@ -167,8 +229,8 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 1000; ++i) publisher.ingest(vin, {{"vehicle.queue.concurrent", {{"value", i}}}});
             finished = true;
         });
-        while (!finished) publisher.tick(true);
-        producer.join(); publisher.tick(true);
+        while (!finished) tick_and_wait(publisher, true);
+        producer.join(); tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/queueConcurrent") == "999");
     } else if (scenario == "owned-ingest") {
         const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
@@ -176,47 +238,47 @@ int main(int argc, char** argv) {
             json fields = {{key, {{"value", 10}, {"unit", "kWh"}}}};
             publisher.ingest(vin, std::move(fields), receipt);
         } // Producer JSON is destroyed before the queued update is processed.
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/" + id(key)) == "10");
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
         json fields = {{key, {{"value", 20}, {"unit", "kWh"}}}};
         publisher.ingest(vin, fields, receipt + std::chrono::seconds(1));
         fields[key]["value"] = 999; // An lvalue producer must remain independent too.
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/" + id(key)) == "20");
     } else if (scenario == "indexed-collision") {
         const std::string first = "vehicle.collision.test", second = "vehicle.collision-test";
         const std::string other_vin = "WBA00000000000001";
-        publisher.ingest(vin, {{first, {{"value", 1}}}}); publisher.tick(true);
+        publisher.ingest(vin, {{first, {{"value", 1}}}}); tick_and_wait(publisher, true);
         const auto first_id = id(first);
-        publisher.ingest(vin, {{second, {{"value", 2}}}}); publisher.tick(true);
+        publisher.ingest(vin, {{second, {{"value", 2}}}}); tick_and_wait(publisher, true);
         const auto second_id = id(second);
         assert(first_id == "collisionTest" && first_id != second_id);
-        publisher.ingest(other_vin, {{second, {{"value", 3}}}}); publisher.tick(true);
-        publisher.ingest(other_vin, {{first, {{"value", 4}}}}); publisher.tick(true);
+        publisher.ingest(other_vin, {{second, {{"value", 3}}}}); tick_and_wait(publisher, true);
+        publisher.ingest(other_vin, {{first, {{"value", 4}}}}); tick_and_wait(publisher, true);
         assert(id(second, other_vin) == first_id && id(first, other_vin) != first_id);
         for (int i = 10; i < 20; ++i) {
             messages.clear();
             publisher.ingest(vin, {{first, {{"value", i}}}, {second, {{"value", i + 1}}}});
-            publisher.tick(true);
+            tick_and_wait(publisher, true);
             assert(latest(base + "telemetry/" + first_id) == std::to_string(i));
             assert(latest(base + "telemetry/" + second_id) == std::to_string(i + 1));
             assert(latest(base + "$homie") == "<missing>");
         }
-        publisher.ingest(vin, {{first, {{"value", 20}, {"unit", "km"}}}}); publisher.tick(true);
+        publisher.ingest(vin, {{first, {{"value", 20}, {"unit", "km"}}}}); tick_and_wait(publisher, true);
         assert(id(first) == first_id && id(second) == second_id);
         assert(id(second, other_vin) == first_id);
         assert(latest(base + "telemetry/$properties") == first_id + "," + second_id + ",lastUpdate");
     } else if (scenario == "indexed-restore") {
         const std::string first = "vehicle.collision.test", second = "vehicle.collision-test";
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         messages.clear();
         publisher.ingest(vin, {{first, {{"value", 42}}}, {second, {{"value", 43}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/existingTest42") == "42");
         assert(latest(base + "telemetry/collisionTest") == "43");
         assert(latest(base + "$homie") == "<missing>");
-        publisher.ingest(vin, {{"vehicle.collision_test", {{"value", 44}}}}); publisher.tick(true);
+        publisher.ingest(vin, {{"vehicle.collision_test", {{"value", 44}}}}); tick_and_wait(publisher, true);
         assert(id(first) == "existingTest42" && id(second) == "collisionTest");
         const auto added = id("vehicle.collision_test");
         assert(added != "existingTest42" && added != "collisionTest");
@@ -227,24 +289,24 @@ int main(int argc, char** argv) {
         json fields = json::object();
         for (int i = 0; i < 100; ++i) fields["vehicle.audit.field" + std::to_string(i)] = {{"value", i}};
         publisher.ingest(vin, fields, receipt);
-        publisher.tick(true, clock);
+        tick_and_wait(publisher, true, clock);
         assert(cache_writes == 1); // New registry is persisted immediately.
         messages.clear(); cache_writes = 0;
         for (int i = 1; i <= 60; ++i) {
             publisher.ingest(vin, {{"vehicle.audit.field0", {{"value", i}}}}, receipt + std::chrono::seconds(i));
-            publisher.tick(true, clock + std::chrono::seconds(i));
+            tick_and_wait(publisher, true, clock + std::chrono::seconds(i));
         }
         assert(messages.size() == 120 && cache_writes == 1);
         std::cout << "60 changed updates / 100 fields: publications=" << messages.size() << " cache_writes=" << cache_writes << '\n';
         messages.clear(); cache_writes = 0;
         publisher.ingest(vin, {{"vehicle.audit.field0", {{"value", 60}}}}, receipt + std::chrono::seconds(61));
-        publisher.tick(true, clock + std::chrono::seconds(61));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(61));
         assert(messages.size() == 1 && messages[0].first == base + "telemetry/lastUpdate");
         assert(cache_writes == 0);
         std::cout << "Identical value / fresh receipt: publications=" << messages.size() << " cache_writes=" << cache_writes << '\n';
         messages.clear();
         clients[0]->connect_cb(clients[0], clients[0]->context, 0);
-        publisher.tick(true, clock + std::chrono::seconds(62));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(62));
         assert(latest(base + "$homie") == "4.0.0" && latest(base + "telemetry/auditField0") == "60");
         assert(latest(base + "telemetry/auditField99") == "99");
         publisher.shutdown();
@@ -260,50 +322,50 @@ int main(int argc, char** argv) {
             assert(rejected);
         }
         const auto clock = std::chrono::steady_clock::now();
-        publisher.ingest(vin, field); publisher.tick(true, clock);
+        publisher.ingest(vin, field); tick_and_wait(publisher, true, clock);
         assert(cache_writes == 1);
         publisher.ingest(vin, {{key, {{"value", 1}, {"unit", "kWh"}}}});
-        publisher.tick(true, clock + std::chrono::seconds(1));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(1));
         assert(cache_writes == 1);
-        publisher.tick(true, clock + std::chrono::seconds(2));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(2));
         assert(cache_writes == 2);
-        publisher.tick(true, clock + std::chrono::seconds(4));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(4));
         assert(cache_writes == 2); // Clean/idle caches do not write periodically.
     } else if (scenario == "delta-retry") {
         publisher.ingest(vin, {{key, {{"value", 0}}}, {"other", {{"value", false}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         messages.clear(); failure = 4;
         publisher.ingest(vin, {{key, {{"value", 1}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(messages.empty());
-        failure = 0; publisher.tick(true);
+        failure = 0; tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/" + id(key)) == "1");
         assert(latest(base + "telemetry/other") == "false");
         assert(latest(base + "$homie") == "4.0.0" && latest(base + "$state") == "ready");
     } else if (scenario == "cache-retry") {
         const auto clock = std::chrono::steady_clock::now();
         cache_failure = true;
-        publisher.ingest(vin, field); publisher.tick(true, clock);
-        assert(cache_writes == 1 && latest(base + "$state") == "ready");
-        for (int i = 1; i < 60; ++i) publisher.tick(true, clock + std::chrono::seconds(i));
+        publisher.ingest(vin, field); tick_and_wait(publisher, true, clock);
+        assert(cache_writes == 1 && latest(base + "$state") == "<missing>");
+        for (int i = 1; i < 60; ++i) tick_and_wait(publisher, true, clock + std::chrono::seconds(i));
         assert(cache_writes == 1); // A failed disk must not be retried each second.
         cache_failure = false;
-        publisher.tick(true, clock + std::chrono::seconds(60));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(60));
         assert(cache_writes == 2 && std::filesystem::exists(cache));
         messages.clear();
         publisher.ingest(vin, {{key, {{"value", 1}, {"unit", "Wh"}}}});
-        publisher.tick(true, clock + std::chrono::seconds(61));
+        tick_and_wait(publisher, true, clock + std::chrono::seconds(61));
         assert(cache_writes == 3); // Schema change bypasses the checkpoint interval.
         assert(latest(base + "telemetry/" + id(key) + "/$unit") == "Wh");
     } else if (scenario == "invalid") {
         publisher.ingest("invalid", field);
         publisher.ingest(vin, {{"null", {{"value", nullptr}}}, {"empty", {{"value", ""}}}, {"bad", 1}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.empty() && messages.empty());
     } else if (scenario == "last-update") {
         const auto first = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
         publisher.ingest(vin, field, first);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/lastUpdate/$name") == "Last update");
         assert(latest(base + "telemetry/lastUpdate/$datatype") == "datetime");
         assert(latest(base + "telemetry/lastUpdate/$settable") == "false");
@@ -311,30 +373,30 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
         assert(latest(base + "telemetry/$properties").find("lastUpdate") != std::string::npos);
         messages.clear();
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(messages.empty()); // A timer tick is not a BMW update.
         publisher.ingest(vin, {{"bad", {{"value", nullptr}}}}, first + std::chrono::seconds(1));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(messages.empty());
         publisher.ingest(vin, field, first + std::chrono::seconds(2)); // Identical readings still count as receipts.
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         assert(latest(base + "$homie") == "<missing>");
         publisher.ingest("WBA00000000000001", field, first + std::chrono::seconds(3));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest("homie/bmw-wba00000000000001/telemetry/lastUpdate") == "2026-10-04T12:00:03.123Z");
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         messages.clear();
         clients[0]->connect_cb(clients[0], clients[0]->context, 0);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.123Z");
         publisher.ingest(vin, {{"last-update", {{"value", "BMW field"}}}}, first + std::chrono::seconds(4));
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(id("last-update") != "lastUpdate");
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.123Z");
         assert(latest(base + "telemetry/" + id("last-update")) == "BMW field");
     } else if (scenario == "restore-last-update") {
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.123Z");
         assert(latest(base + "telemetry/lastUpdate/$datatype") == "datetime");
     } else if (scenario == "names") {
@@ -342,7 +404,7 @@ int main(int argc, char** argv) {
         const std::string tire = "vehicle.chassis.axle.row1.wheel.left.tire.pressure";
         const std::string unknown = "vehicle.newSystem.HTTPStatus";
         publisher.ingest(vin, {{hood, {{"value", false}}}, {tire, {{"value", 290}}}, {unknown, {{"value", "OK"}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(id(hood) == "bodyHoodIsOpen");
         assert(id(tire) == "chassisAxleRow1WheelLeftTirePressure");
         assert(id(unknown) == "newSystemHttpStatus");
@@ -351,7 +413,7 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/newSystemHttpStatus/$name") == "New system http status");
         assert(latest(base + "telemetry/$name") == "Vehicle data");
     } else if (scenario == "migration") {
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         const std::string hood = "vehicle.body.hood.isOpen";
         assert(id(hood) == "bodyHoodIsOpen");
         assert(latest(base + "telemetry/bodyHoodIsOpen") == "false");
@@ -360,12 +422,12 @@ int main(int argc, char** argv) {
             assert(latest(base + "telemetry/" + legacy_id(hood) + suffix).empty());
         assert(latest(base + "telemetry/$properties").find(legacy_id(hood)) == std::string::npos);
         const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
-        publisher.ingest(vin, {{hood, {{"value", true}}}}, receipt); publisher.tick(true);
+        publisher.ingest(vin, {{hood, {{"value", true}}}}, receipt); tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/bodyHoodIsOpen") == "true");
         assert(latest(base + "telemetry/$properties") == "bodyHoodIsOpen,lastUpdate");
-        publisher.ingest(vin, {{hood, {{"value", false}}}}, receipt); publisher.tick(true);
+        publisher.ingest(vin, {{hood, {{"value", false}}}}, receipt); tick_and_wait(publisher, true);
     } else if (scenario == "migration-v2") {
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(id("vehicle.body.hood.isOpen") == "bodyHoodIsOpen");
         assert(latest(base + "telemetry/bodyHoodIsOpen") == "false");
         assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
@@ -376,18 +438,18 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/$properties") == "bodyHoodIsOpen,lastUpdate");
         messages.clear();
         const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
-        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", true}}}}, receipt); publisher.tick(true);
+        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", true}}}}, receipt); tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/bodyHoodIsOpen") == "true");
         assert(latest(base + "$homie") == "<missing>");
-        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", false}}}}, receipt); publisher.tick(true);
+        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", false}}}}, receipt); tick_and_wait(publisher, true);
     } else if (scenario == "restore") {
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
         assert(latest(base + "telemetry/$properties").find(id("new.field")) != std::string::npos);
         assert(clients.size() == 2);
     } else if (scenario == "publish") {
         publisher.ingest(vin, field);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.size() == 1 && tls_calls == 1);
         assert(id(key) == "drivetrainElectricEngineChargingSmeEnergyDeltaFullyCharged");
         assert(wills[0] == std::make_pair(base + "$state", std::string("lost")));
@@ -398,12 +460,12 @@ int main(int argc, char** argv) {
         assert(latest(base + "telemetry/" + id(key)) == "0");
         messages.clear();
         publisher.ingest(vin, {{key, {{"value", 0.75}, {"unit", "kWh"}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
         assert(latest(base + "$homie") == "<missing>"); // values do not rebuild channels
         messages.clear();
         publisher.ingest(vin, {{"new.field", {{"value", true}}}, {"new-field", {{"value", "OPEN"}}}});
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "telemetry/$properties").find(id(key)) != std::string::npos);
         assert(latest(base + "telemetry/$properties").find(id("new.field")) != std::string::npos);
         assert(id("new.field") != id("new-field"));
@@ -411,44 +473,44 @@ int main(int argc, char** argv) {
         assert(id("new.field").rfind("newFieldH", 0) == 0);
         assert(latest(base + "telemetry/" + id("new.field") + "/$datatype") == "boolean");
         assert(latest(base + "telemetry/" + id("new-field") + "/$datatype") == "string");
-        publisher.tick(false);
+        tick_and_wait(publisher, false);
         assert(latest(base + "$state") == "alert");
         messages.clear();
         clients[0]->disconnect_cb(clients[0], clients[0]->context, 1);
         clients[0]->connect_cb(clients[0], clients[0]->context, 0);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "$homie") == "4.0.0");
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
         publisher.ingest("WBA00000000000001", field);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.size() == 2 && wills.size() == 2 && wills[0].first != wills[1].first);
     } else if (scenario == "async") {
         connect_now = false;
         publisher.ingest(vin, field);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.size() == 1 && messages.empty());
         assert(std::filesystem::exists(cache));
         clients[0]->connect_cb(clients[0], clients[0]->context, 5);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(messages.empty());
         clients[0]->connect_cb(clients[0], clients[0]->context, 0);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "$state") == "ready");
         assert(latest(base + "telemetry/" + id(key)) == "0");
     } else if (scenario == "retry") {
         failure = 4;
         publisher.ingest(vin, field);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(messages.empty());
         failure = 0;
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(latest(base + "$state") == "ready");
         assert(latest(base + "telemetry/" + id(key)) == "0");
     } else if (scenario == "corrupt") {
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.empty());
         publisher.ingest(vin, field);
-        publisher.tick(true);
+        tick_and_wait(publisher, true);
         assert(clients.size() == 1);
     } else { assert(false); }
     // openHAB UIDUtils leaves alphanumerics unchanged; these IDs need no escaping.
@@ -492,6 +554,9 @@ int main(int argc, char** argv) {
 
     def test_pending_queue_concurrent_ingest_and_drain(self):
         self.run_scenario('queue-concurrent', self.base / 'queue-concurrent.json')
+
+    def test_slow_cache_write_does_not_block_values_and_preserves_newer_generations(self):
+        self.run_scenario('async-cache', self.base / 'async-cache.json')
 
     def test_index_restores_persisted_ids_before_updates_and_new_collisions(self):
         cache = self.base / 'indexed-restore.json'

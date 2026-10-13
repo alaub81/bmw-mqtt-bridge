@@ -141,7 +141,7 @@ exec "$TEST_REAL_JQ" "$@"
         source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
         # Select the definition rather than the forward declaration used by Homie.
         helper = source[source.rindex('static bool write_file_atomic('):]
-        helper = helper.split('static bool refresh_tokens() {')[0]
+        helper = helper.split('static token_validation::Tokens fetch_and_store_tokens() {')[0]
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             test_source = base / 'writer.cpp'

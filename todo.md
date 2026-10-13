@@ -18,8 +18,9 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
   preserve FIFO order, drop the oldest waiting message on overflow, and log a
   cumulative dropped count. Coalescing was evaluated and deferred to preserve
   field registration order and schema transitions. RAW/split events are unaffected.
-- [ ] Evaluate moving token refresh and cache persistence off the main loop, so
-  slow HTTP requests or disk flushes cannot delay watchdogs and telemetry processing.
+- [x] Move runtime token refresh and cache persistence off the main loop. Use
+  single-flight jobs, owned snapshots and generation tracking; retain main-thread
+  credential adoption/MQTT management and join workers on shutdown.
 - [ ] Store the token set consistently as one recoverable state. Consider an atomic
   token bundle or versioned generations, with migration from the existing three
   files and tests for failures during commit and restart recovery.
