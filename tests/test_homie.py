@@ -40,7 +40,8 @@ struct mosquitto {
 };
 static std::vector<mosquitto*> clients;
 static std::vector<std::pair<std::string, std::string>> messages, wills;
-static int destroyed = 0, tls_calls = 0, failure = 0;
+static int destroyed = 0, tls_calls = 0, failure = 0, cache_writes = 0;
+static bool cache_failure = false;
 static bool connect_now = true;
 static std::string BMB_MQTT_LOCAL_HOST = "broker.test", BMB_MQTT_LOCAL_USER = "user", BMB_MQTT_LOCAL_PASSWORD = "secret";
 static int BMB_MQTT_LOCAL_PORT = 8883;
@@ -95,6 +96,8 @@ int mosquitto_publish(mosquitto* c, int* mid, const char* topic, int size, const
     return 0;
 }
 static bool write_file_atomic(const std::string& path, const std::string& content) {
+    ++cache_writes;
+    if (cache_failure) return false;
     std::ofstream out(path); out << content; return out.good();
 }
 #include "homie_publisher.hpp"
@@ -122,8 +125,82 @@ int main(int argc, char** argv) {
     const std::string vin = "WBY8P610007L21042", key = "vehicle.drivetrain.electricEngine.charging.smeEnergyDeltaFullyCharged";
     const auto field = json{{key, {{"value", 0}, {"unit", "kWh"}}}};
     active_cache = cache;
-    HomiePublisher publisher(cache);
-    if (scenario == "invalid") {
+    HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60));
+    if (scenario == "performance") {
+        const auto clock = std::chrono::steady_clock::now();
+        const auto receipt = std::chrono::system_clock::time_point(std::chrono::seconds(1791115200));
+        json fields = json::object();
+        for (int i = 0; i < 100; ++i) fields["vehicle.audit.field" + std::to_string(i)] = {{"value", i}};
+        publisher.ingest(vin, fields, receipt);
+        publisher.tick(true, clock);
+        assert(cache_writes == 1); // New registry is persisted immediately.
+        messages.clear(); cache_writes = 0;
+        for (int i = 1; i <= 60; ++i) {
+            publisher.ingest(vin, {{"vehicle.audit.field0", {{"value", i}}}}, receipt + std::chrono::seconds(i));
+            publisher.tick(true, clock + std::chrono::seconds(i));
+        }
+        assert(messages.size() == 120 && cache_writes == 1);
+        std::cout << "60 changed updates / 100 fields: publications=" << messages.size() << " cache_writes=" << cache_writes << '\n';
+        messages.clear(); cache_writes = 0;
+        publisher.ingest(vin, {{"vehicle.audit.field0", {{"value", 60}}}}, receipt + std::chrono::seconds(61));
+        publisher.tick(true, clock + std::chrono::seconds(61));
+        assert(messages.size() == 1 && messages[0].first == base + "telemetry/lastUpdate");
+        assert(cache_writes == 0);
+        std::cout << "Identical value / fresh receipt: publications=" << messages.size() << " cache_writes=" << cache_writes << '\n';
+        messages.clear();
+        clients[0]->connect_cb(clients[0], clients[0]->context, 0);
+        publisher.tick(true, clock + std::chrono::seconds(62));
+        assert(latest(base + "$homie") == "4.0.0" && latest(base + "telemetry/auditField0") == "60");
+        assert(latest(base + "telemetry/auditField99") == "99");
+        publisher.shutdown();
+        assert(cache_writes == 1); // Shutdown flushes uncheckpointed receipt time.
+        json persisted;
+        std::ifstream input(cache); input >> persisted;
+        assert(persisted.at("last_updates").at(vin) == "2026-10-04T12:01:01.000Z");
+    } else if (scenario == "cache-interval") {
+        for (int interval : {-1, 0, 86401}) {
+            bool rejected = false;
+            try { HomiePublisher invalid(cache, std::chrono::seconds(interval)); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            assert(rejected);
+        }
+        const auto clock = std::chrono::steady_clock::now();
+        publisher.ingest(vin, field); publisher.tick(true, clock);
+        assert(cache_writes == 1);
+        publisher.ingest(vin, {{key, {{"value", 1}, {"unit", "kWh"}}}});
+        publisher.tick(true, clock + std::chrono::seconds(1));
+        assert(cache_writes == 1);
+        publisher.tick(true, clock + std::chrono::seconds(2));
+        assert(cache_writes == 2);
+        publisher.tick(true, clock + std::chrono::seconds(4));
+        assert(cache_writes == 2); // Clean/idle caches do not write periodically.
+    } else if (scenario == "delta-retry") {
+        publisher.ingest(vin, {{key, {{"value", 0}}}, {"other", {{"value", false}}}});
+        publisher.tick(true);
+        messages.clear(); failure = 4;
+        publisher.ingest(vin, {{key, {{"value", 1}}}});
+        publisher.tick(true);
+        assert(messages.empty());
+        failure = 0; publisher.tick(true);
+        assert(latest(base + "telemetry/" + id(key)) == "1");
+        assert(latest(base + "telemetry/other") == "false");
+        assert(latest(base + "$homie") == "4.0.0" && latest(base + "$state") == "ready");
+    } else if (scenario == "cache-retry") {
+        const auto clock = std::chrono::steady_clock::now();
+        cache_failure = true;
+        publisher.ingest(vin, field); publisher.tick(true, clock);
+        assert(cache_writes == 1 && latest(base + "$state") == "ready");
+        for (int i = 1; i < 60; ++i) publisher.tick(true, clock + std::chrono::seconds(i));
+        assert(cache_writes == 1); // A failed disk must not be retried each second.
+        cache_failure = false;
+        publisher.tick(true, clock + std::chrono::seconds(60));
+        assert(cache_writes == 2 && std::filesystem::exists(cache));
+        messages.clear();
+        publisher.ingest(vin, {{key, {{"value", 1}, {"unit", "Wh"}}}});
+        publisher.tick(true, clock + std::chrono::seconds(61));
+        assert(cache_writes == 3); // Schema change bypasses the checkpoint interval.
+        assert(latest(base + "telemetry/" + id(key) + "/$unit") == "Wh");
+    } else if (scenario == "invalid") {
         publisher.ingest("invalid", field);
         publisher.ingest(vin, {{"null", {{"value", nullptr}}}, {"empty", {{"value", ""}}}, {"bad", 1}});
         publisher.tick(true);
@@ -296,6 +373,20 @@ int main(int argc, char** argv) {
         cache = self.base / 'restore.json'
         self.run_scenario('publish', cache)
         self.run_scenario('restore', cache)
+
+    def test_delta_publications_checkpoint_interval_and_shutdown_flush(self):
+        result = self.run_scenario('performance', self.base / 'performance.json')
+        self.assertIn('publications=120 cache_writes=1', result.stdout)
+        self.assertIn('publications=1 cache_writes=0', result.stdout)
+
+    def test_failed_cache_writes_back_off_without_stopping_publication(self):
+        self.run_scenario('cache-retry', self.base / 'cache-retry.json')
+
+    def test_custom_cache_interval_validation_and_idle_writes(self):
+        self.run_scenario('cache-interval', self.base / 'cache-interval.json')
+
+    def test_failed_delta_publications_retry_current_values_and_full_schema(self):
+        self.run_scenario('delta-retry', self.base / 'delta-retry.json')
 
     def test_invalid_and_empty_values_do_not_create_devices(self):
         self.run_scenario('invalid', self.base / 'invalid.json')

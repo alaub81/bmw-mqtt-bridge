@@ -24,6 +24,7 @@ installation, configuration, operation and development documentation.
 - [Lint checks](#lint-checks)
 - [CI and container releases](#ci-and-container-releases)
 - [Pre-deployment tests](#pre-deployment-tests)
+- [TODO](#todo)
 - [Security](#security)
 - [License](#license)
 - [Credits](#credits)
@@ -36,6 +37,8 @@ installation, configuration, operation and development documentation.
 - Configurable local MQTT client ID, topic prefix and TLS certificate verification.
 - Docker Compose with persistent tokens and a main-loop heartbeat healthcheck.
 - Lightweight runtime using libmosquitto, libcurl and the bundled nlohmann/json header.
+- Homie delta publishing, periodic cache checkpoints and configurable log levels.
+- RAM-backed heartbeat storage and bounded Docker logs in the full Compose example.
 
 The application runs in Docker using Alpine 3.24. The builder stage compiles the C++17 executable
 and installs development libraries; the runtime stage contains the bridge and
@@ -52,6 +55,10 @@ bmw-mqtt-bridge/
 ├── resources/
 │   ├── src/
 │   │   ├── bmw_mqtt_bridge.cpp
+│   │   ├── bridge_log.hpp
+│   │   ├── token_validation.hpp
+│   │   ├── homie_publisher.hpp
+│   │   ├── homie_names.hpp
 │   │   └── json.hpp
 │   ├── bmw_flow.sh
 │   ├── compile.sh
@@ -365,7 +372,13 @@ cause a failed check. The heartbeat is removed on startup and clean shutdown.
 The bridge and healthcheck default to `/tmp/bmw-mqtt-bridge-heartbeat`.
 `BMB_BMW_HEARTBEAT_FILE` can override this internal path when explicitly supplied
 through the container environment.
-The file lives in `/tmp`, outside the persistent token volume.
+The full Compose example mounts `/tmp` as a 16 MiB `tmpfs` with `noexec` and
+`nosuid`, outside the persistent token volume. Heartbeat updates therefore stay
+in RAM instead of writing into the container filesystem. The healthcheck interval
+and outage thresholds are unchanged. The minimal Quick start configuration does
+not include this mount; copy the full example or add its `tmpfs` setting.
+Existing installations must add the setting to their own Compose file and
+recreate the container to apply it.
 
 Docker does not automatically restart a running container solely because its
 health status is unhealthy. The existing restart policy handles process exits.
@@ -454,6 +467,8 @@ Validation on startup:
 | `BMB_BMW_TOKEN_DIR` | `/app/token` | Default token directory shared by authentication and bridge operation. Optional container environment override; adjust the volume mount to the same path. |
 | `BMB_BMW_HEARTBEAT_FILE` | `/tmp/bmw-mqtt-bridge-heartbeat` | Default heartbeat path shared by the main loop and Compose healthcheck. Optional container environment override. |
 | `BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
+| `BMB_LOG_LEVEL` | `info` | Minimum log severity: `debug`, `info`, `warning` or `error` (case insensitive). Telemetry payloads are logged only at `debug`. |
+| `BMB_HOMIE_CACHE_INTERVAL` | `60` | Seconds between Homie value/receipt cache checkpoints, from `1` to `86400`. Schema changes and clean shutdown save immediately. |
 
 The default Compose file omits both path variables. The application,
 authentication helper and entrypoint provide their own defaults, and the
@@ -479,10 +494,45 @@ Numeric options reject invalid values instead of silently falling back to defaul
 Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS`, `BMB_MQTT_RAW_TOPICS`, `BMB_MQTT_HOMIE` and
 `BMB_MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
+Invalid log levels and cache intervals fail startup even if Homie is disabled.
 
 The supplied `.env.sample` enables `BMB_MQTT_SPLIT_TOPICS=1`; the executable and Compose
 fallback default to `0` when it is not configured. The default `BMB_MQTT_LOCAL_HOST`
 is `host.docker.internal` in both Compose and the executable.
+
+### Logging and performance checks
+
+`BMB_LOG_LEVEL=info` reports startup, connection changes, token refresh and errors.
+RAW forwarding, split payloads, routine MQTT library messages and unchanged status
+refreshes require `debug`. Repeated errors at selected logging sites are emitted
+at most once every 30 seconds, with a suppressed-message count on the next emitted
+message. Debug disables this limit for troubleshooting. The bridge omits token
+response bodies at every log level, including HTTP and validation failures.
+
+The full Compose example uses Docker's `local` log driver, with three files of
+up to 10 MiB each before compression. Logs remain on disk, but rotate automatically.
+Apply these settings explicitly to existing Compose files and recreate the
+container. To inspect logs, continue using `docker compose logs`.
+
+The deterministic Homie regression scenario uses 100 registered fields and 60
+single-field changes, one per simulated second. Before optimization this path
+produced 6,120 publications and 60 complete cache writes; it now produces 120
+publications and one periodic cache write, excluding initial discovery and final
+shutdown. An identical value with a fresh receipt produces only one timestamp
+publication and no immediate cache write. These are operation counts with simulated
+MQTT and file writes, not measured CPU percentages or physical disk bytes.
+
+Run the performance and persistence regression checks with:
+
+```bash
+python3 -m unittest tests.test_homie.HomieTests.test_delta_publications_checkpoint_interval_and_shutdown_flush \
+  tests.test_homie.HomieTests.test_failed_cache_writes_back_off_without_stopping_publication
+```
+
+For target-host comparisons, use the same message recording, enabled outputs and
+logging level. Compare CPU time, written bytes, cache/flush calls, publication count
+and log volume; include idle periods, update bursts and reconnects. Startup/reconnect
+replays intentionally publish more than ordinary deltas.
 
 ## MQTT topics
 
@@ -569,8 +619,10 @@ Reports the connection state to the BMW MQTT broker (true = connected, false = d
 A successful local MQTT reconnect does not imply that BMW is connected. After
 local CONNACK, the bridge immediately attempts to publish the current BMW state;
 the normal disconnect debounce still applies. Status messages use retained QoS 1
-and are refreshed every 30 seconds while the connection state is stable. This
-also corrects a retained status overwritten later by a delayed Last Will. The
+and are refreshed every 30 seconds while the connection state is stable.
+Unchanged periodic publications are logged only at `debug`; state changes remain
+visible at `info`. The periodic publication also corrects a retained status
+overwritten later by a delayed Last Will. The
 state is read inside the publisher instead of accepting a caller's earlier
 snapshot. Callbacks from retired local clients are ignored.
 
@@ -670,9 +722,9 @@ received data. Empty/invalid messages, connection status changes, timer ticks,
 restarts and retained-value replays do not advance the timestamp. It is not the
 measurement timestamp supplied by BMW, which can be older than the receipt time.
 
-The timestamp is retained and persisted per VIN in `homie-cache.json`, with the
-same replay behavior as the telemetry values. Existing caches have no receipt
-time until another valid message arrives; the bridge does not invent a timestamp
+The timestamp is retained and checkpointed per VIN in `homie-cache.json`, with the
+same persistence interval and replay behavior as the telemetry values. Existing
+caches have no receipt time until another valid message arrives; the bridge does not invent a timestamp
 when loading old readings. The property uses openHAB's supported `datetime`
 datatype while retaining the Homie 4 discovery structure. Link the discovered
 `telemetry#lastUpdate` channel to a **DateTime** Item in MainUI with the default
@@ -695,10 +747,24 @@ If a field's type or unit changes, its description is republished.
 
 Newly encountered fields extend the complete `$properties` list and trigger a
 description update (`init`, metadata, values, then `ready`). Fields absent from a
-later partial message remain registered. The complete field registry and last
-values are saved atomically in `/app/token/homie-cache.json` in the existing volume,
-and replayed after a bridge restart or Homie MQTT reconnect. Cached readings may
-be old; `ready` reports connectivity, not freshness of every field.
+later partial message remain registered. During ordinary updates, only changed
+property values and the updated receipt timestamp are published; unchanged `$state` is not republished. Identical readings
+still update **Last update**, without resending all values. Schema changes and
+MQTT reconnects continue to publish the complete description and all cached values.
+
+The complete field registry and last values are saved atomically in
+`/app/token/homie-cache.json` in the existing volume, and replayed after a bridge
+restart or Homie MQTT reconnect. New fields, type/unit changes and cache migrations
+are saved immediately. Value and receipt timestamp changes are collected in RAM
+and saved every `BMB_HOMIE_CACHE_INTERVAL` seconds (default: 60), when dirty.
+An idle bridge does not rewrite its cache. Failed saves retry after the same
+interval while MQTT publication continues; clean shutdown attempts a final save.
+
+An abrupt process or host failure can lose value/receipt updates since the last
+successful checkpoint, normally up to the configured interval. Disk failures can
+extend this window. MQTT publication does not wait for a periodic checkpoint.
+Token files are separate and still saved immediately with synchronous flushes.
+Cached readings may be old; `ready` reports connectivity, not freshness of every field.
 
 Homie descriptions and values always use retained QoS 1, independently of
 `BMB_MQTT_RETAIN`. Each vehicle has its own connection to the configured local broker,
@@ -718,7 +784,7 @@ openHAB version; the bridge republishes the entire updated description.
 
 If Homie topics do not appear, check the `[homie]` logs: new property registration,
 the additional client's CONNACK result, and a description publication summary are
-logged separately. `[homie/log]` includes MQTT library warnings/errors. A queued
+logged separately. Individual new-property registrations require `BMB_LOG_LEVEL=debug`. `[homie/log]` includes MQTT library warnings/errors. A queued
 connect or publish is not confirmation of broker acceptance. Homie uses `homie/`,
 independently of `BMB_MQTT_LOCAL_PREFIX`; broker ACLs must permit the vehicle's
 `homie/bmw-<VIN>/...` topics, including its Last Will. A populated cache with no
@@ -818,7 +884,7 @@ Run all project lint checks with:
 ./tests/linter-check.sh
 ```
 
-The CI lint job invokes this exact command. It never fixes or stages files and
+The local lint command never fixes or stages files and
 returns a non-zero exit code if any check fails or a required tool is missing.
 All checks run even when an earlier check fails; the final summary lists the
 results. No BMW account, token files, running MQTT broker or Docker daemon is needed.
@@ -942,17 +1008,59 @@ The separate CI job **Offline regression tests** invokes exactly
 environment-only configuration, GHCR image selection and shared development settings,
 token response validation, permissions and atomic writes, BMW server backoff
 and library reconnect suppression, TLS settings,
-MQTT status and shutdown handling, heartbeat and
+MQTT status and shutdown handling, JWT/refresh validation and response limits,
+log levels and repeat suppression, Homie deltas/checkpoints/failure retries, heartbeat and
 Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end
 test of a running container connected to BMW and an actual MQTT broker.
+
+## TODO
+
+Remaining work from the code and performance review on 2026-10-13. Token response
+validation, Homie cache checkpoints, delta publication, reduced logging and the
+Compose `tmpfs` mount are implemented. The items below remain open.
+
+- [ ] Measure CPU time, physical disk writes, cache/flush calls, MQTT publications
+  and log volume on the target host using the same recorded message workload
+  before and after optimization. Include idle periods, bursts and reconnects.
+- [ ] Add a per-device index from BMW field names to Homie property IDs to avoid
+  scanning the complete property registry for every incoming field.
+- [ ] Avoid building RAW/Legacy topics when RAW output is disabled; review remaining
+  JSON copies, topic construction and repeated formatting against measured CPU costs.
+- [ ] Bound the pending Homie update queue and define explicit overload behavior.
+  Evaluate coalescing state updates per vehicle/field while preserving receipt time
+  and any data that consumers need as events.
+- [ ] Evaluate moving token refresh and cache persistence off the main loop, so
+  slow HTTP requests or disk flushes cannot delay watchdogs and telemetry processing.
+- [ ] Store the token set consistently as one recoverable state. Consider an atomic
+  token bundle or versioned generations, with migration from the existing three
+  files and tests for failures during commit and restart recovery.
+- [ ] Separate configuration, token management, MQTT lifecycle and telemetry into
+  independently compilable components; reduce Homie's dependency on bridge globals.
+- [ ] Correct the remaining openHAB documentation and widget descriptions from
+  `telemetry#last-update` to `telemetry#lastUpdate`; check examples against current behavior.
+- [ ] Add integration tests with a real local MQTT broker for delta updates,
+  discovery, reconnect replay, retained state, Last Will and shutdown acknowledgements.
+- [ ] Add failure/load tests for full or read-only storage, interrupted persistence,
+  slow HTTP requests, message bursts and sustained operation.
+- [ ] Add automated checks for openHAB widget expressions, state mappings, unit
+  conversion and missing/invalid Item values, alongside YAML validation.
+- [ ] Run the container without root, use a read-only root filesystem, drop
+  unnecessary capabilities and enable `no-new-privileges`. Verify authentication,
+  token-volume ownership, `tmpfs` access and existing-volume migration first.
 
 ## Security
 
 - BMW CarData is a private API — use responsibly.
 - Never publish or share your `id_token` / `refresh_token`.
 - Tokens expire automatically; the bridge refreshes them securely.
+- JWT expiry must be a positive integer within the platform's supported range.
+  Invalid or expired startup JWTs trigger a refresh instead of an uncaught JSON error.
+- Refresh responses must contain three non-empty strings without whitespace or
+  control characters and a valid, unexpired JWT. Invalid responses leave files
+  and in-memory credentials unchanged. HTTP responses are limited to 1 MiB.
+- JWT expiry inspection does not verify the signature; BMW verifies the credential.
 - Keep your Mosquitto broker private or protected by authentication.
 
 ## License

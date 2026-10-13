@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
 
 ''')
             binary = Path(temporary) / 'status-test'
-            result = subprocess.run(['c++', '-std=c++17', '-pthread', '-I',
+            result = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-pthread', '-I',
                                      str(ROOT / 'resources/src'), str(path),
                                      '-o', str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

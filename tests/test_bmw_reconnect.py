@@ -211,7 +211,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.binary = Path(cls.temp.name) / 'bmw-reconnect'
-        subprocess.run(['c++', '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
+        subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     def run_scenarios(self, scenarios):

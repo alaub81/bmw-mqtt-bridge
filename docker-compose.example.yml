@@ -2,6 +2,8 @@ services:
   bmw-mqtt-bridge:
     image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
     environment:
+      BMB_LOG_LEVEL: ${BMB_LOG_LEVEL:-info}
+      BMB_HOMIE_CACHE_INTERVAL: ${BMB_HOMIE_CACHE_INTERVAL:-60}
       BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT: ${BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT:-120}
       BMB_BMW_CLIENT_ID: ${BMB_BMW_CLIENT_ID:?Set BMB_BMW_CLIENT_ID in .env}
       BMB_BMW_GCID: ${BMB_BMW_GCID:?Set BMB_BMW_GCID in .env}
@@ -23,6 +25,13 @@ services:
       BMB_MQTT_RETAIN: ${BMB_MQTT_RETAIN:-0}
     volumes:
       - data_bmb_token:/app/token
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       # Check process liveness and prolonged outages of either MQTT connection.
       test:

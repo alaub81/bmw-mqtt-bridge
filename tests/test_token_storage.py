@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
 }
 ''')
             binary = base / 'writer-test'
-            subprocess.run(['c++', '-std=c++17', str(test_source), '-o', str(binary)],
+            subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', str(test_source), '-o', str(binary)],
                            check=True, capture_output=True)
             result = subprocess.run([str(binary), str(base / 'token')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

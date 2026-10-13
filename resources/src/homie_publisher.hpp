@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <sstream>
 #include "homie_names.hpp"
+#include "bridge_log.hpp"
 
 // Homie 4 needs one MQTT connection (and therefore one Last Will) per device.
 // Ingest runs on the BMW callback thread; all registry and client management runs
@@ -23,7 +24,8 @@ class HomiePublisher {
         mosquitto* client = nullptr;
         std::atomic<bool> connected{false}, resend{false};
         bool dirty = true;
-        bool values_dirty = true;
+        std::set<std::string> changed_values;
+        bool timestamp_dirty = false;
         std::string state;
         std::string last_update;
         std::chrono::steady_clock::time_point last_online{};
@@ -42,6 +44,10 @@ class HomiePublisher {
     std::vector<Update> pending;
     std::string cache_path;
     bool cache_dirty = false;
+    bool cache_schema_dirty = false;
+    bool cache_retry_pending = false;
+    std::chrono::seconds cache_interval;
+    std::chrono::steady_clock::time_point last_cache_attempt = std::chrono::steady_clock::now();
 
     static std::string timestamp(std::chrono::system_clock::time_point received_at) {
         const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(received_at);
@@ -101,7 +107,7 @@ class HomiePublisher {
     }
     static void on_connect(mosquitto*, void* context, int rc) {
         auto& d = *static_cast<Device*>(context);
-        std::cerr << "[homie] " << d.id << " CONNACK rc=" << rc
+        BMB_LOG(info) << "[homie] " << d.id << " CONNACK rc=" << rc
                   << " (" << mosquitto_connack_string(rc) << ")\n";
         d.connected = rc == 0;
         if (rc == 0) d.resend = true;
@@ -109,13 +115,14 @@ class HomiePublisher {
     static void on_disconnect(mosquitto*, void* context, int rc) {
         auto& d = *static_cast<Device*>(context);
         d.connected = false;
-        std::cerr << "[homie] " << d.id << " disconnected rc=" << rc
+        BMB_LOG(warning) << "[homie] " << d.id << " disconnected rc=" << rc
                   << " (" << mosquitto_strerror(rc) << ")\n";
     }
     static void on_log(mosquitto*, void* context, int level, const char* message) {
         if (!(level & (MOSQ_LOG_ERR | MOSQ_LOG_WARNING))) return;
         const auto& d = *static_cast<Device*>(context);
-        std::cerr << "[homie/log] " << d.id << " level=" << level << " "
+        BMB_LOG_THROTTLED_AT((level & MOSQ_LOG_ERR) ? bridge_log::Level::error : bridge_log::Level::warning)
+            << "[homie/log] " << d.id << " level=" << level << " "
                   << (message ? message : "") << '\n';
     }
     static void on_publish(mosquitto*, void* context, int mid) {
@@ -131,7 +138,7 @@ class HomiePublisher {
         const int rc = mosquitto_publish(d.client, nullptr, topic.c_str(),
                                          static_cast<int>(value.size()), value.data(), 1, true);
         if (rc != MOSQ_ERR_SUCCESS) {
-            std::cerr << "[homie] publish failed topic='" << topic
+            BMB_LOG_THROTTLED(error) << "[homie] publish failed topic='" << topic
                       << "': " << mosquitto_strerror(rc) << '\n';
             return false;
         }
@@ -151,7 +158,7 @@ class HomiePublisher {
         // A generated client ID prevents collisions with the regular local client.
         d.client = mosquitto_new(nullptr, true, &d);
         if (!d.client) {
-            std::cerr << "[homie] " << d.id << " client allocation failed\n";
+            BMB_LOG(error) << "[homie] " << d.id << " client allocation failed\n";
             return false;
         }
         mosquitto_connect_callback_set(d.client, on_connect);
@@ -166,17 +173,17 @@ class HomiePublisher {
                                            BMB_MQTT_LOCAL_PASSWORD.c_str());
         }
         if (rc != MOSQ_ERR_SUCCESS || !configure_local_tls(d.client)) {
-            std::cerr << "[homie] " << d.id << " client configuration failed rc=" << rc << '\n';
+            BMB_LOG(error) << "[homie] " << d.id << " client configuration failed rc=" << rc << '\n';
             stop_client(d);
             return false;
         }
         rc = mosquitto_connect_async(d.client, BMB_MQTT_LOCAL_HOST.c_str(), BMB_MQTT_LOCAL_PORT, 30);
         if (rc == MOSQ_ERR_SUCCESS) rc = mosquitto_loop_start(d.client);
-        std::cerr << "[homie] " << d.id << " connect queued host='" << BMB_MQTT_LOCAL_HOST
+        BMB_LOG(info) << "[homie] " << d.id << " connect queued host='" << BMB_MQTT_LOCAL_HOST
                   << "' port=" << BMB_MQTT_LOCAL_PORT << " rc=" << rc
                   << " (" << mosquitto_strerror(rc) << ")\n";
         if (rc != MOSQ_ERR_SUCCESS) {
-            std::cerr << "[homie] connection failed: " << mosquitto_strerror(rc) << '\n';
+            BMB_LOG(error) << "[homie] connection failed: " << mosquitto_strerror(rc) << '\n';
             stop_client(d);
             return false;
         }
@@ -270,13 +277,18 @@ class HomiePublisher {
             }
             devices = std::move(restored);
             cache_dirty = version < 3;
-            std::cerr << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
+            cache_schema_dirty = cache_dirty;
+            BMB_LOG(info) << "[homie] restored " << devices.size() << " vehicle(s) from field cache\n";
         } catch (const std::exception& e) {
-            std::cerr << "[homie] cannot load field cache: " << e.what() << '\n';
+            BMB_LOG(warning) << "[homie] cannot load field cache: " << e.what() << '\n';
         }
     }
-    void save() {
+    void save(std::chrono::steady_clock::time_point now, bool force = false) {
         if (!cache_dirty) return;
+        // Schema additions/migrations are durable immediately. Value/receipt
+        // updates are checkpointed; failed saves retry at the same interval.
+        if (!force && now - last_cache_attempt < cache_interval && (!cache_schema_dirty || cache_retry_pending)) return;
+        last_cache_attempt = now;
         json vehicles = json::object();
         json legacy_ids = json::object();
         json last_updates = json::object();
@@ -290,13 +302,21 @@ class HomiePublisher {
         if (write_file_atomic(cache_path, json{{"version", 3}, {"vehicles", vehicles},
                                               {"legacy_ids", legacy_ids}, {"last_updates", last_updates}}.dump())) {
             cache_dirty = false;
+            cache_schema_dirty = false;
+            cache_retry_pending = false;
         } else {
-            std::cerr << "[homie] cannot save field cache\n";
+            cache_retry_pending = true;
+            BMB_LOG_THROTTLED(error) << "[homie] cannot save field cache\n";
         }
     }
 
 public:
-    explicit HomiePublisher(const std::string& path) : cache_path(path) { load(); }
+    explicit HomiePublisher(const std::string& path, std::chrono::seconds interval = std::chrono::seconds(60))
+        : cache_path(path), cache_interval(interval) {
+        if (interval.count() < 1 || interval.count() > 86400)
+            throw std::invalid_argument("BMB_HOMIE_CACHE_INTERVAL must be between 1 and 86400 seconds");
+        load();
+    }
     ~HomiePublisher() { shutdown(); }
     void ingest(const std::string& vin, const json& fields,
                 std::chrono::system_clock::time_point received_at = std::chrono::system_clock::now()) {
@@ -304,7 +324,7 @@ public:
         std::lock_guard<std::mutex> lock(pending_mutex);
         pending.push_back({vin, fields, timestamp(received_at)});
     }
-    void tick(bool bmw_connected) {
+    void tick(bool bmw_connected, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         std::vector<Update> updates;
         {
             std::lock_guard<std::mutex> lock(pending_mutex);
@@ -324,54 +344,68 @@ public:
                 const auto id = property_id(d, name);
                 const auto previous = d.properties.find(id);
                 if (previous == d.properties.end()) {
-                    std::cerr << "[homie] " << d.id << " new property '" << name << "'\n";
+                    BMB_LOG(debug) << "[homie] " << d.id << " new property '" << name << "'\n";
                 }
                 // Never narrow numeric properties based on an initial integer 0.
                 const bool schema_changed = previous == d.properties.end() ||
                     previous->second.datatype != p.datatype || previous->second.unit != p.unit;
+                const bool value_changed = schema_changed || previous->second.value != p.value;
                 d.properties[id] = std::move(p);
                 d.dirty |= schema_changed;
-                cache_dirty = true;
+                cache_dirty |= value_changed;
+                cache_schema_dirty |= schema_changed;
                 // Values are sent after the schema below, even for first sightings.
-                d.values_dirty = true;
+                if (value_changed) d.changed_values.insert(id);
                 accepted = true;
             }
             if (accepted) {
                 auto& d = device(vin);
                 if (d.last_update.empty()) d.dirty = true;
+                if (d.last_update != received_at) {
+                    d.timestamp_dirty = true;
+                    cache_dirty = true;
+                }
                 d.last_update = received_at;
             }
         }
-        save();
-        const auto now = std::chrono::steady_clock::now();
+        save(now);
         for (auto& [vin, entry] : devices) {
             auto& d = *entry;
             if (d.connected) d.last_online = now;
             if ((!d.client && d.last_online == std::chrono::steady_clock::time_point{}) ||
                 (!d.connected && now - d.last_online >= std::chrono::seconds(30))) {
                 if (d.last_online != std::chrono::steady_clock::time_point{})
-                    std::cerr << "[homie] " << d.id << " offline for 30s; rebuilding client\n";
+                    BMB_LOG(warning) << "[homie] " << d.id << " offline for 30s; rebuilding client\n";
                 stop_client(d);
                 start_client(d);
             }
             if (!d.connected) continue;
             const bool resend = d.resend.exchange(false);
-            if (d.dirty || resend || d.values_dirty) {
+            if (d.dirty || resend || !d.changed_values.empty() || d.timestamp_dirty) {
                 // Full replay also recovers from a broker losing its retained store.
                 const bool schema_update = d.dirty || resend;
                 bool ok = !schema_update || describe(d);
                 if (ok) {
-                    for (const auto& [id, p] : d.properties)
-                        ok &= publish(d, "telemetry/" + id, p.value);
-                    if (!d.last_update.empty()) ok &= publish(d, "telemetry/lastUpdate", d.last_update);
+                    if (schema_update) {
+                        for (const auto& [id, p] : d.properties)
+                            ok &= publish(d, "telemetry/" + id, p.value);
+                    } else {
+                        for (const auto& id : d.changed_values)
+                            ok &= publish(d, "telemetry/" + id, d.properties.at(id).value);
+                    }
+                    if (!d.last_update.empty() && (schema_update || d.timestamp_dirty))
+                        ok &= publish(d, "telemetry/lastUpdate", d.last_update);
                 }
                 const std::string state = bmw_connected ? "ready" : "alert";
-                if (ok) ok = publish(d, "$state", state);
+                if (ok && (schema_update || state != d.state)) ok = publish(d, "$state", state);
                 if (ok) d.state = state;
                 d.dirty = !ok;
-                d.values_dirty = !ok;
+                if (ok) {
+                    d.changed_values.clear();
+                    d.timestamp_dirty = false;
+                }
                 if (ok && schema_update) {
-                    std::cerr << "[homie] description and " << d.properties.size()
+                    BMB_LOG(info) << "[homie] description and " << d.properties.size()
                               << " value(s) queued under homie/" << d.id << "/\n";
                 }
             } else {
@@ -385,7 +419,7 @@ public:
         }
     }
     void shutdown() {
-        save();
+        save(std::chrono::steady_clock::now(), true);
         for (auto& [vin, entry] : devices) {
             auto& d = *entry;
             bool acknowledged = false;

@@ -152,6 +152,14 @@ class DockerConfigurationTests(unittest.TestCase):
                 self.assertEqual(volume['target'], '/app/token')
                 self.assertNotIn('BMB_BMW_TOKEN_DIR', configured)
                 self.assertNotIn('BMB_BMW_HEARTBEAT_FILE', configured)
+                self.assertEqual(service['tmpfs'], ['/tmp:rw,noexec,nosuid,size=16m,mode=1777'])
+                self.assertEqual(service['logging'], {'driver': 'local', 'options': {'max-size': '10m', 'max-file': '3'}})
+
+    @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
+    def test_runtime_performance_options_forward_overrides(self):
+        service = self.compose_service(BMB_LOG_LEVEL='warning', BMB_HOMIE_CACHE_INTERVAL='30')
+        self.assertEqual(service['environment']['BMB_LOG_LEVEL'], 'warning')
+        self.assertEqual(service['environment']['BMB_HOMIE_CACHE_INTERVAL'], '30')
 
     def compose_service(self, compose_file='docker-compose.example.yml', env_file='.env.sample', **overrides):
         env = dict(os.environ, BMB_BMW_CLIENT_ID='test-client', BMB_BMW_GCID='test-gcid')

@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.binary = Path(cls.temp.name) / 'reconnect-test'
-        result = subprocess.run(['c++', '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
+        result = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
                                 capture_output=True, text=True)
         if result.returncode:
             cls.temp.cleanup()

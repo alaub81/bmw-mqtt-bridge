@@ -75,7 +75,7 @@ int main() {
 }
 ''')
             binary = base / 'outputs'
-            compiled = subprocess.run(['c++', '-std=c++17', '-I', str(ROOT / 'resources/src'),
+            compiled = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-I', str(ROOT / 'resources/src'),
                                        str(path), '-o', str(binary)], text=True, capture_output=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15)
