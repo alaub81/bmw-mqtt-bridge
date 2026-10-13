@@ -469,6 +469,7 @@ Validation on startup:
 | `BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT` | `120` in Compose | Positive seconds of continuous downtime tolerated for each MQTT connection before healthchecks fail. |
 | `BMB_LOG_LEVEL` | `info` | Minimum log severity: `debug`, `info`, `warning` or `error` (case insensitive). Telemetry payloads are logged only at `debug`. |
 | `BMB_HOMIE_CACHE_INTERVAL` | `60` | Seconds between Homie value/receipt cache checkpoints, from `1` to `86400`. Schema changes and clean shutdown save immediately. |
+| `BMB_HOMIE_QUEUE_LIMIT` | `1024` | Maximum valid Homie messages waiting for the main loop, from `1` to `65536`. Overflow drops the oldest waiting message and logs a warning. |
 
 The default Compose file omits both path variables. The application,
 authentication helper and entrypoint provide their own defaults, and the
@@ -494,7 +495,7 @@ Numeric options reject invalid values instead of silently falling back to defaul
 Both MQTT ports must be between 1 and 65535; `BMB_MQTT_SPLIT_TOPICS`, `BMB_MQTT_RAW_TOPICS`, `BMB_MQTT_HOMIE` and
 `BMB_MQTT_RETAIN` accept only `0` or `1`. Topic prefixes cannot contain
 MQTT wildcards (`+` or `#`). TLS switches accept `true` or `false`.
-Invalid log levels and cache intervals fail startup even if Homie is disabled.
+Invalid log levels, cache intervals and queue limits fail startup even if Homie is disabled.
 
 The supplied `.env.sample` enables `BMB_MQTT_SPLIT_TOPICS=1`; the executable and Compose
 fallback default to `0` when it is not configured. The default `BMB_MQTT_LOCAL_HOST`
@@ -539,6 +540,26 @@ It reads payload bytes directly for JSON parsing and moves parsed fields into th
 Homie queue after split publishing. The queue owns those fields independently of
 the MQTT callback's lifetime. Homie-only output skips the split-field loop; when
 all telemetry outputs are disabled, the callback returns without parsing payloads.
+
+Homie pending updates use a bounded FIFO queue (`BMB_HOMIE_QUEUE_LIMIT`, default:
+1,024 messages). This prevents unlimited backlog while token refresh or persistence
+blocks the main loop. Invalid VINs and messages without a valid non-empty field
+are ignored before enqueueing and cannot evict valid updates.
+
+When full, the queue drops the oldest waiting message to accept the newest one.
+A throttled warning includes the cumulative dropped-message count since process
+startup and the configured limit. Dropped messages are not replayed; a field only
+present in a dropped partial message retains its previous cached value, or remains
+undiscovered until received again. RAW and split publication are unaffected.
+Receipt time is preserved for retained messages and advances only when a valid
+queued update is processed. Increase the limit if expected bursts trigger warnings.
+
+The limit counts waiting messages, not bytes or registered properties. During a
+drain, the main loop owns one batch of up to the limit while the producer can fill
+the next batch. Normal FIFO processing preserves first-seen property ID assignment
+and schema changes. Per-field coalescing was evaluated and deferred because it can
+discard schema transitions or alter collision assignment; Homie continues to publish
+the final state per tick as before.
 
 ## MQTT topics
 

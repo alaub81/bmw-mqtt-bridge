@@ -125,8 +125,52 @@ int main(int argc, char** argv) {
     const std::string vin = "WBY8P610007L21042", key = "vehicle.drivetrain.electricEngine.charging.smeEnergyDeltaFullyCharged";
     const auto field = json{{key, {{"value", 0}, {"unit", "kWh"}}}};
     active_cache = cache;
-    HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60));
-    if (scenario == "owned-ingest") {
+    HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60),
+                             scenario == "queue-limit" || scenario == "queue-concurrent" ? 2 : 1024);
+    if (scenario == "queue-limit") {
+        for (size_t limit : {size_t(0), size_t(65537)}) {
+            bool rejected = false;
+            try { HomiePublisher invalid(cache, std::chrono::seconds(60), limit); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            assert(rejected);
+        }
+        const auto receipt = std::chrono::system_clock::time_point(std::chrono::seconds(1791115200));
+        publisher.ingest(vin, {{"vehicle.queue.oldOnly", {{"value", 1}}}}, receipt);
+        publisher.ingest(vin, {{"vehicle.queue.partialKeep", {{"value", 2}}}}, receipt + std::chrono::seconds(1));
+        publisher.ingest(vin, {{"vehicle.queue.latest", {{"value", 3}}}}, receipt + std::chrono::seconds(2));
+        publisher.tick(true);
+        assert(latest(base + "telemetry/queueOldOnly") == "<missing>");
+        assert(latest(base + "telemetry/queuePartialKeep") == "2");
+        assert(latest(base + "telemetry/queueLatest") == "3");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:02.000Z");
+        publisher.ingest(vin, {{"vehicle.queue.latest", {{"value", 4}}}}, receipt + std::chrono::seconds(3));
+        publisher.ingest(vin, {{"vehicle.queue.partialKeep", {{"value", 5}}}}, receipt + std::chrono::seconds(4));
+        publisher.ingest(vin, {{"empty", {{"value", ""}}}}, receipt + std::chrono::seconds(5));
+        publisher.ingest(vin, {{"null", {{"value", nullptr}}}}, receipt + std::chrono::seconds(6));
+        publisher.ingest("invalid", field, receipt + std::chrono::seconds(7));
+        publisher.tick(true);
+        assert(latest(base + "telemetry/queueLatest") == "4" && latest(base + "telemetry/queuePartialKeep") == "5");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:04.000Z");
+        for (int i = 0; i < 1000; ++i)
+            publisher.ingest(vin, {{"vehicle.queue.latest", {{"value", i}}}}, receipt + std::chrono::seconds(10 + i));
+        publisher.tick(true);
+        assert(latest(base + "telemetry/queueLatest") == "999");
+        assert(latest(base + "telemetry/queuePartialKeep") == "5");
+        json persisted;
+        publisher.shutdown();
+        std::ifstream input(cache); input >> persisted;
+        assert(persisted.at("vehicles").at(vin).size() == 2);
+        assert(persisted.at("last_updates").at(vin) == "2026-10-04T12:16:49.000Z");
+    } else if (scenario == "queue-concurrent") {
+        std::atomic<bool> finished{false};
+        std::thread producer([&] {
+            for (int i = 0; i < 1000; ++i) publisher.ingest(vin, {{"vehicle.queue.concurrent", {{"value", i}}}});
+            finished = true;
+        });
+        while (!finished) publisher.tick(true);
+        producer.join(); publisher.tick(true);
+        assert(latest(base + "telemetry/queueConcurrent") == "999");
+    } else if (scenario == "owned-ingest") {
         const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
         {
             json fields = {{key, {{"value", 10}, {"unit", "kWh"}}}};
@@ -441,6 +485,13 @@ int main(int argc, char** argv) {
 
     def test_queued_ingest_owns_json_after_producer_destruction_or_mutation(self):
         self.run_scenario('owned-ingest', self.base / 'owned-ingest.json')
+
+    def test_pending_queue_overflow_invalid_inputs_and_receipt_time(self):
+        result = self.run_scenario('queue-limit', self.base / 'queue-limit.json')
+        self.assertIn('dropped oldest update; total_dropped=1 limit=2', result.stderr)
+
+    def test_pending_queue_concurrent_ingest_and_drain(self):
+        self.run_scenario('queue-concurrent', self.base / 'queue-concurrent.json')
 
     def test_index_restores_persisted_ids_before_updates_and_new_collisions(self):
         cache = self.base / 'indexed-restore.json'

@@ -14,9 +14,10 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
   Skip the split-field loop when split output is disabled.
 - [ ] Profile remaining JSON processing, topic construction and repeated formatting
   against measured CPU costs before further optimization.
-- [ ] Bound the pending Homie update queue and define explicit overload behavior.
-  Evaluate coalescing state updates per vehicle/field while preserving receipt time
-  and any data that consumers need as events.
+- [x] Bound the pending Homie update queue and define explicit overload behavior:
+  preserve FIFO order, drop the oldest waiting message on overflow, and log a
+  cumulative dropped count. Coalescing was evaluated and deferred to preserve
+  field registration order and schema transitions. RAW/split events are unaffected.
 - [ ] Evaluate moving token refresh and cache persistence off the main loop, so
   slow HTTP requests or disk flushes cannot delay watchdogs and telemetry processing.
 - [ ] Store the token set consistently as one recoverable state. Consider an atomic

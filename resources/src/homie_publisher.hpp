@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <deque>
 #include <unordered_map>
 #include <memory>
 #include <set>
@@ -45,7 +46,9 @@ class HomiePublisher {
         json fields;
         std::string received_at;
     };
-    std::vector<Update> pending;
+    std::deque<Update> pending;
+    const size_t queue_limit;
+    size_t dropped_updates = 0; // Protected by pending_mutex.
     std::string cache_path;
     bool cache_dirty = false;
     bool cache_schema_dirty = false;
@@ -101,6 +104,11 @@ class HomiePublisher {
             return static_cast<char>(std::tolower(c));
         });
         return "bmw-" + vin;
+    }
+    static bool valid_field(const std::string& name, const json& field) {
+        if (name.empty() || !field.is_object() || !field.contains("value")) return false;
+        const auto& value = field.at("value");
+        return !value.is_null() && (!value.is_string() || !value.get_ref<const std::string&>().empty());
     }
     Device& device(const std::string& vin) {
         auto& entry = devices[vin];
@@ -317,21 +325,43 @@ class HomiePublisher {
     }
 
 public:
-    explicit HomiePublisher(const std::string& path, std::chrono::seconds interval = std::chrono::seconds(60))
-        : cache_path(path), cache_interval(interval) {
+    explicit HomiePublisher(const std::string& path, std::chrono::seconds interval = std::chrono::seconds(60),
+                            size_t pending_limit = 1024)
+        : queue_limit(pending_limit), cache_path(path), cache_interval(interval) {
         if (interval.count() < 1 || interval.count() > 86400)
             throw std::invalid_argument("BMB_HOMIE_CACHE_INTERVAL must be between 1 and 86400 seconds");
+        if (pending_limit < 1 || pending_limit > 65536)
+            throw std::invalid_argument("BMB_HOMIE_QUEUE_LIMIT must be between 1 and 65536 updates");
         load();
     }
     ~HomiePublisher() { shutdown(); }
     void ingest(const std::string& vin, json fields,
                 std::chrono::system_clock::time_point received_at = std::chrono::system_clock::now()) {
         if (!valid_vin(vin) || !fields.is_object()) return;
-        std::lock_guard<std::mutex> lock(pending_mutex);
-        pending.push_back({vin, std::move(fields), timestamp(received_at)});
+        bool accepted = false;
+        for (const auto& [name, field] : fields.items()) {
+            if (valid_field(name, field)) { accepted = true; break; }
+        }
+        if (!accepted) return; // Invalid/empty messages must not evict valid work.
+        // Format receipt time before taking the queue lock. Keep FIFO order so
+        // first-seen collision IDs and intermediate schema changes stay stable.
+        Update update{vin, std::move(fields), timestamp(received_at)};
+        size_t dropped = 0;
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            if (pending.size() >= queue_limit) {
+                pending.pop_front();
+                dropped = ++dropped_updates;
+            }
+            pending.push_back(std::move(update));
+        }
+        if (dropped) {
+            BMB_LOG_THROTTLED(warning) << "[homie] pending queue full; dropped oldest update; total_dropped="
+                                       << dropped << " limit=" << queue_limit << '\n';
+        }
     }
     void tick(bool bmw_connected, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
-        std::vector<Update> updates;
+        std::deque<Update> updates;
         {
             std::lock_guard<std::mutex> lock(pending_mutex);
             updates.swap(pending);
@@ -339,7 +369,7 @@ public:
         for (const auto& [vin, fields, received_at] : updates) {
             bool accepted = false;
             for (const auto& [name, field] : fields.items()) {
-                if (name.empty() || !field.is_object() || !field.contains("value") || field["value"].is_null()) continue;
+                if (!valid_field(name, field)) continue;
                 const auto& value = field["value"];
                 Property p{name, value.is_boolean() ? "boolean" : value.is_number() ? "float" : "string",
                            field.contains("unit") && field["unit"].is_string() ? field["unit"].get<std::string>() : "",

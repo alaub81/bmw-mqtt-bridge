@@ -59,6 +59,7 @@
 //   BMB_MQTT_RAW_TOPICS       : 0/1  (default: 1; full JSON on RAW and Legacy topics)
 //   BMB_MQTT_HOMIE            : 0/1  (default: 0; additional Homie 4 devices)
 //   BMB_HOMIE_CACHE_INTERVAL  : seconds between value/receipt checkpoints (default: 60; 1..86400)
+//   BMB_HOMIE_QUEUE_LIMIT     : maximum waiting Homie updates (default: 1024; 1..65536)
 //   BMB_LOG_LEVEL             : debug/info/warning/error (default: info)
 //   BMB_BMW_STATUS_STABLE_DELAY : seconds until bmw/status goes to false (default: 5; 0 = immediately)
 //
@@ -795,6 +796,9 @@ int main() try {
     const int homie_cache_interval = env_int("BMB_HOMIE_CACHE_INTERVAL", 60);
     if (homie_cache_interval < 1 || homie_cache_interval > 86400)
         throw std::invalid_argument("BMB_HOMIE_CACHE_INTERVAL must be between 1 and 86400 seconds");
+    const int homie_queue_limit = env_int("BMB_HOMIE_QUEUE_LIMIT", 1024);
+    if (homie_queue_limit < 1 || homie_queue_limit > 65536)
+        throw std::invalid_argument("BMB_HOMIE_QUEUE_LIMIT must be between 1 and 65536 updates");
 
     // fixed token files (no env overrides)
     ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token.txt").string();
@@ -874,7 +878,8 @@ int main() try {
 
     if (BMB_MQTT_HOMIE) {
         g_homie = std::make_unique<HomiePublisher>((std::filesystem::path(TDIR) / "homie-cache.json").string(),
-                                                   std::chrono::seconds(homie_cache_interval));
+                                                   std::chrono::seconds(homie_cache_interval),
+                                                   static_cast<size_t>(homie_queue_limit));
         BMB_LOG(info) << "[homie] Homie 4 publishing enabled\n";
     }
 

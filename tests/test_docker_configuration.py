@@ -157,9 +157,10 @@ class DockerConfigurationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker CLI unavailable')
     def test_runtime_performance_options_forward_overrides(self):
-        service = self.compose_service(BMB_LOG_LEVEL='warning', BMB_HOMIE_CACHE_INTERVAL='30')
+        service = self.compose_service(BMB_LOG_LEVEL='warning', BMB_HOMIE_CACHE_INTERVAL='30', BMB_HOMIE_QUEUE_LIMIT='64')
         self.assertEqual(service['environment']['BMB_LOG_LEVEL'], 'warning')
         self.assertEqual(service['environment']['BMB_HOMIE_CACHE_INTERVAL'], '30')
+        self.assertEqual(service['environment']['BMB_HOMIE_QUEUE_LIMIT'], '64')
 
     def compose_service(self, compose_file='docker-compose.example.yml', env_file='.env.sample', **overrides):
         env = dict(os.environ, BMB_BMW_CLIENT_ID='test-client', BMB_BMW_GCID='test-gcid')
