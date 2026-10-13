@@ -109,7 +109,7 @@ unbekannt. Bei doppelt zugeordneten Zuständen hat angeschlossen Vorrang.
 | `openingsItem` (Fallback) | `ON`: mindestens eine überwachte Öffnung offen; `OFF`: alle überwachten Öffnungen zu |
 | `tireWarningItem` | `ON`: Warnung gemeldet; `OFF`: keine Warnung gemeldet |
 | Vier Reifendruck-Items | `Number:Pressure`, z. B. `290 kPa` oder `2.9 bar`; Anzeige in bar |
-| `lastUpdateItem` | DateTime, verknüpft mit Homie `telemetry#last-update` |
+| `lastUpdateItem` | DateTime, verknüpft mit Homie `telemetry#lastUpdate` |
 
 Bei Verriegelung und Ladestatus sind die exakten Rohzustände konfigurierbar,
 z. B. `lockedState: LOCKED` und `unlockedState: UNLOCKED` bei String-Items.
@@ -135,6 +135,12 @@ ausgewählten Einzel-Items gemeinsam aus.
 **Letzter Empfang** ist die Bridge-Empfangszeit der letzten gültigen BMW-Nachricht.
 Bei Teilnachrichten können einzelne Werte älter sein. Die Verriegelung wird als
 zuletzt gemeldeter Zustand beschriftet; die Empfangszeit wird absolut angezeigt.
+
+Den Homie-Channel **Last update** (`telemetry#lastUpdate`) in MainUI mit einem
+**DateTime** Item und dem Standardprofil verknüpfen und dieses Item als
+`lastUpdateItem` auswählen. Der MQTT-Wert liegt unter
+`homie/bmw-<lowercase-VIN>/telemetry/lastUpdate`. Eine JSONPath-Transformation oder
+ein Profil zur Erzeugung eines Zeitstempels ist dafür nicht erforderlich.
 
 ## Fenster, Türen und Kofferraum
 

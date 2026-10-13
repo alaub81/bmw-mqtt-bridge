@@ -286,7 +286,7 @@ widgets:
           type: TEXT
           context: item
           groupName: status
-          description: 'Homie telemetry#last-update: Empfangszeit der Bridge, kein Messzeitpunkt
+          description: 'Homie telemetry#lastUpdate: Empfangszeit der Bridge, kein Messzeitpunkt
             jedes einzelnen Werts.'
         - name: lockedState
           label: 'Zustände: verriegelt'
@@ -1419,7 +1419,7 @@ widgets:
           type: TEXT
           context: item
           groupName: status
-          description: 'Homie telemetry#last-update: Empfangszeit der Bridge, kein Messzeitpunkt
+          description: 'Homie telemetry#lastUpdate: Empfangszeit der Bridge, kein Messzeitpunkt
             jedes einzelnen Werts.'
         - name: lockedState
           label: 'Zustände: verriegelt'
