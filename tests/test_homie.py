@@ -110,10 +110,10 @@ static std::string legacy_id(const std::string& key) {
     return s;
 }
 static std::string active_cache;
-static std::string id(const std::string& key) {
+static std::string id(const std::string& key, const std::string& vin = "WBY8P610007L21042") {
     json cache;
     std::ifstream input(active_cache); input >> cache;
-    return cache.at("vehicles").at("WBY8P610007L21042").at(key).at("id").get<std::string>();
+    return cache.at("vehicles").at(vin).at(key).at("id").get<std::string>();
 }
 static std::string latest(const std::string& topic) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it)
@@ -126,7 +126,44 @@ int main(int argc, char** argv) {
     const auto field = json{{key, {{"value", 0}, {"unit", "kWh"}}}};
     active_cache = cache;
     HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60));
-    if (scenario == "performance") {
+    if (scenario == "indexed-collision") {
+        const std::string first = "vehicle.collision.test", second = "vehicle.collision-test";
+        const std::string other_vin = "WBA00000000000001";
+        publisher.ingest(vin, {{first, {{"value", 1}}}}); publisher.tick(true);
+        const auto first_id = id(first);
+        publisher.ingest(vin, {{second, {{"value", 2}}}}); publisher.tick(true);
+        const auto second_id = id(second);
+        assert(first_id == "collisionTest" && first_id != second_id);
+        publisher.ingest(other_vin, {{second, {{"value", 3}}}}); publisher.tick(true);
+        publisher.ingest(other_vin, {{first, {{"value", 4}}}}); publisher.tick(true);
+        assert(id(second, other_vin) == first_id && id(first, other_vin) != first_id);
+        for (int i = 10; i < 20; ++i) {
+            messages.clear();
+            publisher.ingest(vin, {{first, {{"value", i}}}, {second, {{"value", i + 1}}}});
+            publisher.tick(true);
+            assert(latest(base + "telemetry/" + first_id) == std::to_string(i));
+            assert(latest(base + "telemetry/" + second_id) == std::to_string(i + 1));
+            assert(latest(base + "$homie") == "<missing>");
+        }
+        publisher.ingest(vin, {{first, {{"value", 20}, {"unit", "km"}}}}); publisher.tick(true);
+        assert(id(first) == first_id && id(second) == second_id);
+        assert(id(second, other_vin) == first_id);
+        assert(latest(base + "telemetry/$properties") == first_id + "," + second_id + ",lastUpdate");
+    } else if (scenario == "indexed-restore") {
+        const std::string first = "vehicle.collision.test", second = "vehicle.collision-test";
+        publisher.tick(true);
+        messages.clear();
+        publisher.ingest(vin, {{first, {{"value", 42}}}, {second, {{"value", 43}}}});
+        publisher.tick(true);
+        assert(latest(base + "telemetry/existingTest42") == "42");
+        assert(latest(base + "telemetry/collisionTest") == "43");
+        assert(latest(base + "$homie") == "<missing>");
+        publisher.ingest(vin, {{"vehicle.collision_test", {{"value", 44}}}}); publisher.tick(true);
+        assert(id(first) == "existingTest42" && id(second) == "collisionTest");
+        const auto added = id("vehicle.collision_test");
+        assert(added != "existingTest42" && added != "collisionTest");
+        assert(latest(base + "telemetry/" + added) == "44");
+    } else if (scenario == "performance") {
         const auto clock = std::chrono::steady_clock::now();
         const auto receipt = std::chrono::system_clock::time_point(std::chrono::seconds(1791115200));
         json fields = json::object();
@@ -264,6 +301,11 @@ int main(int argc, char** argv) {
         for (const auto* suffix : {"", "/$name", "/$datatype", "/$settable", "/$retained", "/$unit"})
             assert(latest(base + "telemetry/" + legacy_id(hood) + suffix).empty());
         assert(latest(base + "telemetry/$properties").find(legacy_id(hood)) == std::string::npos);
+        const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
+        publisher.ingest(vin, {{hood, {{"value", true}}}}, receipt); publisher.tick(true);
+        assert(latest(base + "telemetry/bodyHoodIsOpen") == "true");
+        assert(latest(base + "telemetry/$properties") == "bodyHoodIsOpen,lastUpdate");
+        publisher.ingest(vin, {{hood, {{"value", false}}}}, receipt); publisher.tick(true);
     } else if (scenario == "migration-v2") {
         publisher.tick(true);
         assert(id("vehicle.body.hood.isOpen") == "bodyHoodIsOpen");
@@ -274,6 +316,12 @@ int main(int argc, char** argv) {
             assert(latest(base + "telemetry/last-update" + suffix).empty());
         }
         assert(latest(base + "telemetry/$properties") == "bodyHoodIsOpen,lastUpdate");
+        messages.clear();
+        const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
+        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", true}}}}, receipt); publisher.tick(true);
+        assert(latest(base + "telemetry/bodyHoodIsOpen") == "true");
+        assert(latest(base + "$homie") == "<missing>");
+        publisher.ingest(vin, {{"vehicle.body.hood.isOpen", {{"value", false}}}}, receipt); publisher.tick(true);
     } else if (scenario == "restore") {
         publisher.tick(true);
         assert(latest(base + "telemetry/" + id(key)) == "0.75");
@@ -373,6 +421,25 @@ int main(int argc, char** argv) {
         cache = self.base / 'restore.json'
         self.run_scenario('publish', cache)
         self.run_scenario('restore', cache)
+
+    def test_index_preserves_collision_ids_and_isolates_vehicles(self):
+        self.run_scenario('indexed-collision', self.base / 'indexed-collision.json')
+
+    def test_index_restores_persisted_ids_before_updates_and_new_collisions(self):
+        cache = self.base / 'indexed-restore.json'
+        cache.write_text(json.dumps({
+            'version': 3,
+            'vehicles': {'WBY8P610007L21042': {
+                'vehicle.collision.test': {'id': 'existingTest42', 'datatype': 'float', 'unit': '', 'value': '1'},
+                'vehicle.collision-test': {'id': 'collisionTest', 'datatype': 'float', 'unit': '', 'value': '2'},
+            }},
+            'last_updates': {'WBY8P610007L21042': '2026-10-04T12:00:00.123Z'},
+        }))
+        self.run_scenario('indexed-restore', cache)
+        fields = json.loads(cache.read_text())['vehicles']['WBY8P610007L21042']
+        self.assertEqual(len(fields), 3)
+        self.assertEqual(fields['vehicle.collision.test']['id'], 'existingTest42')
+        self.assertEqual(fields['vehicle.collision-test']['id'], 'collisionTest')
 
     def test_delta_publications_checkpoint_interval_and_shutdown_flush(self):
         result = self.run_scenario('performance', self.base / 'performance.json')

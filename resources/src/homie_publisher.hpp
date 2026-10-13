@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <set>
 #include <ctime>
@@ -19,6 +20,9 @@ class HomiePublisher {
     struct Device {
         std::string id;
         std::map<std::string, Property> properties;
+        // Rebuilt from the existing registry on load; never persisted or used
+        // to order discovery, so cached IDs and collision assignment stay stable.
+        std::unordered_map<std::string, std::string> property_ids;
         // Keep migration tombstones to retry retained cleanup on every reconnect.
         std::set<std::string> legacy_ids;
         mosquitto* client = nullptr;
@@ -72,7 +76,8 @@ class HomiePublisher {
         return result;
     }
     static std::string property_id(const Device& d, const std::string& key) {
-        for (const auto& [id, p] : d.properties) if (p.name == key) return id;
+        const auto known = d.property_ids.find(key);
+        if (known != d.property_ids.end()) return known->second;
         const std::string base = homie_names::field_id(key);
         if (base != "lastUpdate" && d.properties.count(base) == 0) return base;
         std::string id = base + "H" + homie_names::suffix(key);
@@ -256,6 +261,7 @@ class HomiePublisher {
                         throw std::runtime_error("invalid cached alphanumeric property ID");
                     if (!valid_property_id(id) || !entry->properties.emplace(id, std::move(p)).second)
                         throw std::runtime_error("invalid or duplicate cached property ID");
+                    entry->property_ids.emplace(name, id);
                     if (version == 1) entry->legacy_ids.insert(legacy_property_id(name));
                     if (version == 2) {
                         const std::string previous_id = field.at("id").get<std::string>();
@@ -350,7 +356,9 @@ public:
                 const bool schema_changed = previous == d.properties.end() ||
                     previous->second.datatype != p.datatype || previous->second.unit != p.unit;
                 const bool value_changed = schema_changed || previous->second.value != p.value;
+                const bool new_property = previous == d.properties.end();
                 d.properties[id] = std::move(p);
+                if (new_property) d.property_ids.emplace(name, id);
                 d.dirty |= schema_changed;
                 cache_dirty |= value_changed;
                 cache_schema_dirty |= schema_changed;

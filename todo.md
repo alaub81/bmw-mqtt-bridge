@@ -7,7 +7,7 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
 - [ ] Measure CPU time, physical disk writes, cache/flush calls, MQTT publications
   and log volume on the target host using the same recorded message workload
   before and after optimization. Include idle periods, bursts and reconnects.
-- [ ] Add a per-device index from BMW field names to Homie property IDs to avoid
+- [x] Add a per-device index from BMW field names to Homie property IDs to avoid
   scanning the complete property registry for every incoming field.
 - [ ] Avoid building RAW/Legacy topics when RAW output is disabled; review remaining
   JSON copies, topic construction and repeated formatting against measured CPU costs.

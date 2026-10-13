@@ -707,6 +707,9 @@ leading `vehicle.` and combine path segments into alphanumeric CamelCase IDs:
 hyphens into `_2D` sequences in channel IDs. If two original fields
 produce the same ID, the later field receives a stable hash suffix. Assigned IDs
 are stored in the cache so additions and restarts do not rename existing channels.
+An in-memory index per vehicle resolves known BMW field names directly to their
+assigned IDs. It is rebuilt from the existing cache on startup, including migrated
+caches, without changing the cache format or discovery ordering.
 
 Known fields have concise English labels, such as **Hood open**, **Fuel level** and
 **Tire pressure — front left**. Unknown fields receive a readable label from their
