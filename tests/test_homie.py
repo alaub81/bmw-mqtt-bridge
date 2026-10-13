@@ -126,7 +126,21 @@ int main(int argc, char** argv) {
     const auto field = json{{key, {{"value", 0}, {"unit", "kWh"}}}};
     active_cache = cache;
     HomiePublisher publisher(cache, std::chrono::seconds(scenario == "cache-interval" ? 2 : 60));
-    if (scenario == "indexed-collision") {
+    if (scenario == "owned-ingest") {
+        const auto receipt = std::chrono::system_clock::time_point(std::chrono::milliseconds(1791115200123LL));
+        {
+            json fields = {{key, {{"value", 10}, {"unit", "kWh"}}}};
+            publisher.ingest(vin, std::move(fields), receipt);
+        } // Producer JSON is destroyed before the queued update is processed.
+        publisher.tick(true);
+        assert(latest(base + "telemetry/" + id(key)) == "10");
+        assert(latest(base + "telemetry/lastUpdate") == "2026-10-04T12:00:00.123Z");
+        json fields = {{key, {{"value", 20}, {"unit", "kWh"}}}};
+        publisher.ingest(vin, fields, receipt + std::chrono::seconds(1));
+        fields[key]["value"] = 999; // An lvalue producer must remain independent too.
+        publisher.tick(true);
+        assert(latest(base + "telemetry/" + id(key)) == "20");
+    } else if (scenario == "indexed-collision") {
         const std::string first = "vehicle.collision.test", second = "vehicle.collision-test";
         const std::string other_vin = "WBA00000000000001";
         publisher.ingest(vin, {{first, {{"value", 1}}}}); publisher.tick(true);
@@ -424,6 +438,9 @@ int main(int argc, char** argv) {
 
     def test_index_preserves_collision_ids_and_isolates_vehicles(self):
         self.run_scenario('indexed-collision', self.base / 'indexed-collision.json')
+
+    def test_queued_ingest_owns_json_after_producer_destruction_or_mutation(self):
+        self.run_scenario('owned-ingest', self.base / 'owned-ingest.json')
 
     def test_index_restores_persisted_ids_before_updates_and_new_collisions(self):
         cache = self.base / 'indexed-restore.json'

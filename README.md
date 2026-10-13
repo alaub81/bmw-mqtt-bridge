@@ -534,6 +534,12 @@ logging level. Compare CPU time, written bytes, cache/flush calls, publication c
 and log volume; include idle periods, update bursts and reconnects. Startup/reconnect
 replays intentionally publish more than ordinary deltas.
 
+The telemetry callback creates RAW/Legacy topics only when RAW output is enabled.
+It reads payload bytes directly for JSON parsing and moves parsed fields into the
+Homie queue after split publishing. The queue owns those fields independently of
+the MQTT callback's lifetime. Homie-only output skips the split-field loop; when
+all telemetry outputs are disabled, the callback returns without parsing payloads.
+
 ## MQTT topics
 
 ### Local MQTT reconnect watchdog

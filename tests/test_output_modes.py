@@ -23,6 +23,7 @@ class OutputModeTests(unittest.TestCase):
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "json.hpp"
 using json = nlohmann::json;
@@ -32,15 +33,16 @@ static int BMB_MQTT_RAW_TOPICS = 1, BMB_MQTT_SPLIT_TOPICS = 0, BMB_MQTT_HOMIE = 
 static std::string BMB_MQTT_LOCAL_PREFIX = "bmw/520d/";
 struct Publication { std::string topic, payload; bool retain; };
 static std::vector<Publication> publications;
-static int publish_local(const std::string& topic, const std::string& payload, bool retain) {
-    publications.push_back({topic, payload, retain}); return 0;
+static int publish_local(const std::string& topic, std::string_view payload, bool retain) {
+    publications.push_back({topic, std::string(payload), retain}); return 0;
 }
 static std::string sanitize_key(std::string key) { return key; }
 struct HomiePublisher {
     int calls = 0;
-    void ingest(const std::string& vin, const json& fields) {
+    void ingest(const std::string& vin, json fields, std::chrono::system_clock::time_point received_at) {
         assert(vin == "WBA31AJ090CN29196");
         assert(fields.at("vehicle.body.hood.isOpen").at("value") == false);
+        assert(received_at <= std::chrono::system_clock::now());
         ++calls;
     }
 };
@@ -72,6 +74,28 @@ int main() {
         if (homie) assert(g_homie->calls == 1);
     }
     on_bmw_message(nullptr, nullptr, nullptr);
+    BMB_MQTT_RAW_TOPICS = 1; BMB_MQTT_SPLIT_TOPICS = 0; BMB_MQTT_HOMIE = 0;
+    g_homie.reset(); publications.clear();
+    // RAW forwarding must preserve bytes, including embedded NULs, without
+    // depending on JSON validity or a terminating NUL in the payload range.
+    std::string binary_payload("raw\0bytes", 9);
+    message.payload = binary_payload.data(); message.payloadlen = 9;
+    on_bmw_message(nullptr, nullptr, &message);
+    assert(publications.size() == 2 && publications[0].payload == binary_payload && publications[1].payload == binary_payload);
+    publications.clear(); message.payloadlen = -1;
+    on_bmw_message(nullptr, nullptr, &message); assert(publications.empty());
+    message.payload = nullptr; message.payloadlen = 0;
+    on_bmw_message(nullptr, nullptr, &message);
+    assert(publications.size() == 2 && publications[0].payload.empty());
+    publications.clear();
+    BMB_MQTT_RAW_TOPICS = 0; BMB_MQTT_SPLIT_TOPICS = 1; BMB_MQTT_HOMIE = 1;
+    g_homie = std::make_unique<HomiePublisher>();
+    topic = "account/WBA31AJ090CN29196/event";
+    payload = R"({"data":{"vehicle.body.hood.isOpen":{"value":false}}})";
+    message = {topic.data(), payload.data(), static_cast<int>(payload.size())};
+    on_bmw_message(nullptr, nullptr, &message);
+    assert(publications.size() == 1 && g_homie->calls == 1);
+    assert(publications[0].topic == "bmw/520d/vehicles/WBA31AJ090CN29196/vehicle.body.hood.isOpen");
 }
 ''')
             binary = base / 'outputs'

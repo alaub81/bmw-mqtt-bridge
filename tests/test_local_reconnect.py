@@ -25,6 +25,7 @@ class LocalReconnectTests(unittest.TestCase):
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 struct mosquitto { bool stopped = false; };
 static mosquitto* g_local = nullptr;
@@ -39,7 +40,7 @@ constexpr int MOSQ_ERR_SUCCESS = 0, MOSQ_ERR_NO_CONN = 4;
 static int created = 0, destroyed = 0, connect_calls = 0, tls_calls = 0, publish_calls = 0;
 static int connect_result = 0, loop_result = 0;
 static bool allocation_failure = false, tls_failure = false, probe_stop = false;
-static int publish_local(const std::string&, const std::string&, bool);
+static int publish_local(const std::string&, std::string_view, bool);
 static void on_local_connect(mosquitto*, void*, int) {}
 static void on_local_disconnect(mosquitto*, void*, int) {}
 static void on_local_publish(mosquitto*, void*, int) {}

@@ -9,8 +9,11 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
   before and after optimization. Include idle periods, bursts and reconnects.
 - [x] Add a per-device index from BMW field names to Homie property IDs to avoid
   scanning the complete property registry for every incoming field.
-- [ ] Avoid building RAW/Legacy topics when RAW output is disabled; review remaining
-  JSON copies, topic construction and repeated formatting against measured CPU costs.
+- [x] Avoid building RAW/Legacy topics when RAW output is disabled, parse incoming
+  payload bytes without a string copy and move parsed fields into the Homie queue.
+  Skip the split-field loop when split output is disabled.
+- [ ] Profile remaining JSON processing, topic construction and repeated formatting
+  against measured CPU costs before further optimization.
 - [ ] Bound the pending Homie update queue and define explicit overload behavior.
   Evaluate coalescing state updates per vehicle/field while preserving receipt time
   and any data that consumers need as events.

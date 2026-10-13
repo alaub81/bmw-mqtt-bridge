@@ -86,6 +86,7 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <sstream>
 #include <algorithm>
 #include <unistd.h>     // access()
@@ -477,7 +478,7 @@ static bool write_file_atomic(const std::string& final_path, const std::string& 
 #include "homie_publisher.hpp"
 static std::unique_ptr<HomiePublisher> g_homie;
 
-static int publish_local(const std::string& topic, const std::string& payload, bool retain) {
+static int publish_local(const std::string& topic, std::string_view payload, bool retain) {
     std::lock_guard<std::mutex> lock(g_local_mutex);
     if (!g_local || !g_local_connected.load()) return MOSQ_ERR_NO_CONN;
     return mosquitto_publish(g_local, nullptr, topic.c_str(), payload.size(), payload.data(), 0, retain);
@@ -602,18 +603,22 @@ static void on_bmw_disconnect_v5(struct mosquitto* client, void*, int rc,
 }
 
 static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_message* m){
-    if (!m || !m->topic) return;
-    std::string in_topic = m->topic ? m->topic : "";
+    if (!m || !m->topic || m->payloadlen < 0) return;
+    if (!BMB_MQTT_RAW_TOPICS && !BMB_MQTT_SPLIT_TOPICS && !BMB_MQTT_HOMIE) return;
+    const std::string_view in_topic(m->topic);
 
-    // Optionally republish full JSON on both raw and legacy topics.
-    auto pos = in_topic.find('/');
-    std::string raw_topic    = BMB_MQTT_LOCAL_PREFIX + "raw" + (pos!=std::string::npos ? in_topic.substr(pos)   : "");
-    std::string legacy_topic = BMB_MQTT_LOCAL_PREFIX          + (pos!=std::string::npos ? in_topic.substr(pos+1) : in_topic);
-
-    bool retain_flag = (BMB_MQTT_RETAIN != 0);
-    const std::string raw_payload(m->payload ? static_cast<const char*>(m->payload) : "",
-                                  m->payload ? static_cast<size_t>(m->payloadlen) : 0);
+    const bool retain_flag = (BMB_MQTT_RETAIN != 0);
+    // MQTT owns these bytes until this callback returns. Publishing copies them
+    // into the local MQTT queue; JSON parsing reads the same range directly.
+    const std::string_view raw_payload = m->payload && m->payloadlen > 0
+        ? std::string_view(static_cast<const char*>(m->payload), static_cast<size_t>(m->payloadlen))
+        : std::string_view{};
     if (BMB_MQTT_RAW_TOPICS) {
+        const auto pos = in_topic.find('/');
+        std::string raw_topic = BMB_MQTT_LOCAL_PREFIX + "raw";
+        if (pos != std::string_view::npos) raw_topic.append(in_topic.substr(pos));
+        std::string legacy_topic = BMB_MQTT_LOCAL_PREFIX;
+        legacy_topic.append(pos != std::string_view::npos ? in_topic.substr(pos + 1) : in_topic);
         int rc1 = publish_local(raw_topic, raw_payload, retain_flag);
         int rc2 = publish_local(legacy_topic, raw_payload, retain_flag);
         if (rc1 || rc2) {
@@ -634,7 +639,7 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
         return;
 
     try {
-        auto j = json::parse(raw_payload, nullptr, true);
+        auto j = json::parse(raw_payload.begin(), raw_payload.end(), nullptr, true);
 
         std::string vin;
         if (j.contains("vin") && j["vin"].is_string()) {
@@ -642,19 +647,20 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
         }
         if (vin.empty()) {
             auto pos = in_topic.find('/');
-            if (pos != std::string::npos) {
+            if (pos != std::string_view::npos) {
                 auto next = in_topic.find('/', pos + 1);
-                if (next != std::string::npos)
-                    vin = in_topic.substr(pos + 1, next - (pos + 1));
+                if (next != std::string_view::npos)
+                    vin.assign(in_topic.substr(pos + 1, next - (pos + 1)));
             }
         }
         if (vin.empty() || vin.size() != 17)
             throw std::runtime_error("invalid or missing VIN");
 
         if (j.contains("data") && j["data"].is_object()) {
-            if (g_homie) g_homie->ingest(vin, j["data"]);
-            for (auto& [propName, propObj] : j["data"].items()) {
-                if (BMB_MQTT_SPLIT_TOPICS && propObj.contains("value")) {
+            const auto received_at = std::chrono::system_clock::now();
+            if (BMB_MQTT_SPLIT_TOPICS) {
+                for (auto& [propName, propObj] : j["data"].items()) {
+                    if (!propObj.contains("value")) continue;
                     std::string topic = BMB_MQTT_LOCAL_PREFIX + "vehicles/" + vin + "/" + sanitize_key(propName);
                     std::string val = propObj.dump();
                     int rc = publish_local(topic, val, retain_flag);
@@ -662,6 +668,9 @@ static void on_bmw_message(struct mosquitto*, void*, const struct mosquitto_mess
                     BMB_LOG(debug) << "[bridge] split '" << topic << "' val=" << val << " rc=" << rc << "\n";
                 }
             }
+            // The queue takes ownership after split publishing has consumed the
+            // fields, avoiding a deep JSON copy without borrowing callback data.
+            if (g_homie) g_homie->ingest(vin, std::move(j["data"]), received_at);
         } else {
             throw std::runtime_error("No valid data in payload");
         }

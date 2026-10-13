@@ -324,11 +324,11 @@ public:
         load();
     }
     ~HomiePublisher() { shutdown(); }
-    void ingest(const std::string& vin, const json& fields,
+    void ingest(const std::string& vin, json fields,
                 std::chrono::system_clock::time_point received_at = std::chrono::system_clock::now()) {
         if (!valid_vin(vin) || !fields.is_object()) return;
         std::lock_guard<std::mutex> lock(pending_mutex);
-        pending.push_back({vin, fields, timestamp(received_at)});
+        pending.push_back({vin, std::move(fields), timestamp(received_at)});
     }
     void tick(bool bmw_connected, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
         std::vector<Update> updates;
