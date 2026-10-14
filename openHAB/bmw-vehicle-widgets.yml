@@ -198,7 +198,7 @@ widgets:
           multiple: true
           groupName: openings
           description: 'Rohzustände für offene Fenster. Ohne eigene Liste: OPEN, OPENED, INTERMEDIATE,
-            TILTED, PARTIALLY_OPEN. Mehrere Zustände als einzelne Einträge hinzufügen.'
+            TILTED, OPEN_TILT, PARTIALLY_OPEN. Mehrere Zustände als einzelne Einträge hinzufügen.'
         - name: windowClosedStates
           label: 'Fenster: geschlossen'
           type: TEXT
@@ -356,7 +356,7 @@ widgets:
                 && items[name].state ? items[name].state.trim().toUpperCase() : ''UNDEF''))
                 >= 0 ? ''unknown'' : ((props.windowItems && props.windowItems.split ? [props.windowItems]
                 : props.windowItems || []).indexOf(name) >= 0 ? (props.windowOpenStates || [''OPEN'',
-                ''OPENED'', ''INTERMEDIATE'', ''TILTED'', ''PARTIALLY_OPEN'']) : (props.doorOpenStates
+                ''OPENED'', ''INTERMEDIATE'', ''TILTED'', ''OPEN_TILT'', ''PARTIALLY_OPEN'']) : (props.doorOpenStates
                 || [''TRUE'', ''ON''])).map((state) => state.trim().toUpperCase()).indexOf((name
                 && items[name] && items[name].state ? items[name].state.trim().toUpperCase()
                 : ''UNDEF'')) >= 0 ? ''open'' : ((props.windowItems && props.windowItems.split
@@ -862,7 +862,7 @@ widgets:
                             : ''UNDEF'')) >= 0 ? ''unknown'' : ((props.windowItems && props.windowItems.split
                             ? [props.windowItems] : props.windowItems || []).indexOf(name) >=
                             0 ? (props.windowOpenStates || [''OPEN'', ''OPENED'', ''INTERMEDIATE'',
-                            ''TILTED'', ''PARTIALLY_OPEN'']) : (props.doorOpenStates || [''TRUE'',
+                            ''TILTED'', ''OPEN_TILT'', ''PARTIALLY_OPEN'']) : (props.doorOpenStates || [''TRUE'',
                             ''ON''])).map((state) => state.trim().toUpperCase()).indexOf((name
                             && items[name] && items[name].state ? items[name].state.trim().toUpperCase()
                             : ''UNDEF'')) >= 0 ? ''open'' : ((props.windowItems && props.windowItems.split
@@ -1331,7 +1331,7 @@ widgets:
           multiple: true
           groupName: openings
           description: 'Rohzustände für offene Fenster. Ohne eigene Liste: OPEN, OPENED, INTERMEDIATE,
-            TILTED, PARTIALLY_OPEN. Mehrere Zustände als einzelne Einträge hinzufügen.'
+            TILTED, OPEN_TILT, PARTIALLY_OPEN. Mehrere Zustände als einzelne Einträge hinzufügen.'
         - name: windowClosedStates
           label: 'Fenster: geschlossen'
           type: TEXT

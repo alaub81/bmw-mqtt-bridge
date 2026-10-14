@@ -167,7 +167,7 @@ Fenster und Türen/Kofferraum haben getrennte Zustandszuordnungen:
 
 | Kategorie | Offen | Geschlossen |
 | --- | --- | --- |
-| Fenster | `OPEN`, `OPENED`, `INTERMEDIATE`, `TILTED`, `PARTIALLY_OPEN` | `CLOSE`, `CLOSED` |
+| Fenster | `OPEN`, `OPENED`, `INTERMEDIATE`, `TILTED`, `OPEN_TILT`, `PARTIALLY_OPEN` | `CLOSE`, `CLOSED` |
 | Türen und Kofferraum | `TRUE`, `ON` | `FALSE`, `OFF` |
 
 Die vier Mehrfachfelder **Fenster: offen / teilweise offen** (`windowOpenStates`),
