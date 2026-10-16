@@ -561,6 +561,73 @@ and schema changes. Per-field coalescing was evaluated and deferred because it c
 discard schema transitions or alter collision assignment; Homie continues to publish
 the final state per tick as before.
 
+### Target-host resource measurement
+
+`tests/resource_soak.py` samples a running Compose service without restarting it or
+reading its credentials, payloads or logs. It uses Python 3.9+ (standard library)
+and the Docker CLI directly on the Linux Docker host. Remote Docker contexts and
+Docker Desktop are unsupported: container PIDs must match the host's `/proc`.
+CPU and block-I/O attribution require cgroup v2; missing or unreadable metrics
+are recorded as `null`, rather than zero. The caller needs access to Docker and
+the container processes' `/proc` files; process-I/O permissions may require root.
+
+Copy `tests/resource_soak.py` into the directory containing your deployed
+`docker-compose.yml`, as `resource_soak.py`. First run a two-minute check:
+
+```bash
+python3 resource_soak.py --compose-file docker-compose.yml \
+  --duration-seconds 120 --output /dev/shm/bmb-resource-soak-smoke.jsonl
+tail -n 1 /dev/shm/bmb-resource-soak-smoke.jsonl | python3 -m json.tool
+```
+
+Check that `status` is `running`, `cpuPercentOneCore` is numeric, and
+`processIoRead` equals `processIoExpected`. An empty `cgroupIo` object is valid
+when the kernel has not attributed any block I/O. Investigate `null` fields or
+unavailable samples before starting a full measurement. If process-I/O reads
+are denied, repeat with appropriate host permissions and a new output filename.
+
+Start a 24-hour baseline with one sample per minute using the same `nohup`
+pattern as the SMA collector:
+
+```bash
+nohup python3 resource_soak.py \
+  --compose-file docker-compose.yml \
+  --service bmw-mqtt-bridge \
+  --duration-seconds 86400 \
+  --interval-seconds 60 \
+  --output /dev/shm/bmb-resource-soak-24h.jsonl \
+  > /dev/shm/bmb-resource-soak-24h.log 2>&1 < /dev/null &
+```
+
+Use the actual Compose service name for `--service` if yours differs. The
+collector defaults to `bmw-mqtt-bridge`, 24 hours, 60 seconds and
+`/dev/shm/bmb-resource-soak.jsonl`. Existing measurement files are never
+overwritten; choose a new filename for each run, including its redirected log.
+Check the log immediately for startup errors. If elevated permissions are
+needed for a background run, authenticate with `sudo -v` first and use
+`nohup sudo -n python3 ...` so a password prompt cannot stall the collector.
+
+Both output files stay in `/dev/shm` (normally tmpfs on Debian), keeping the
+collector's own regular output off disk. Copy them to persistent storage after
+the run and before a reboot. Retain the deployed bridge version, enabled outputs
+and log level with the result, and keep these settings unchanged during the baseline.
+The SMA measurement can continue independently.
+
+Each JSONL row uses schema version 2, compatible with the SMA collector. CPU
+percentages refer to one core (100% equals one fully occupied core). Cgroup I/O
+counts bytes and operations per block device; do not sum stacked logical and
+physical devices. Process `wchar` and `syscw` count bytes submitted to write
+syscalls and syscall calls, including pipes/sockets; they are not physical disk
+writes. Docker daemon log writes are not fully attributed to the bridge's
+processes or cgroup. Host network totals cover physical interfaces across all
+applications, including SMA, and do not count MQTT messages. RAM, thread count,
+health and restarts provide additional context. Rates become `null` across
+restarts, missing reads, process/device changes or counter resets.
+
+This baseline covers actual CPU and attributed I/O over time. Measuring MQTT
+publication counts, cache/flush calls and Docker log volume still needs separate
+instrumentation or a controlled replay before making a full before/after comparison.
+
 ### Background refresh and persistence
 
 During normal operation, token HTTP refresh and synchronous token-file flushes run

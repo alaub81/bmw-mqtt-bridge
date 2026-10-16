@@ -7,6 +7,9 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
 - [ ] Measure CPU time, physical disk writes, cache/flush calls, MQTT publications
   and log volume on the target host using the same recorded message workload
   before and after optimization. Include idle periods, bursts and reconnects.
+  The read-only target-host collector (`tests/resource_soak.py`) and launch
+  instructions are ready; the Debian baseline, analysis and complementary
+  publication/cache/log measurements remain open.
 - [x] Add a per-device index from BMW field names to Homie property IDs to avoid
   scanning the complete property registry for every incoming field.
 - [x] Avoid building RAW/Legacy topics when RAW output is disabled, parse incoming
