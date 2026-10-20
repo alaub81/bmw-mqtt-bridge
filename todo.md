@@ -4,12 +4,15 @@ Remaining work from the code and performance review on 2026-10-13. Token respons
 validation, Homie cache checkpoints, delta publication, reduced logging and the
 Compose `tmpfs` mount are implemented. Track remaining work and completed follow-ups below.
 
-- [ ] Measure CPU time, physical disk writes, cache/flush calls, MQTT publications
-  and log volume on the target host using the same recorded message workload
-  before and after optimization. Include idle periods, bursts and reconnects.
-  The read-only target-host collector (`tests/resource_soak.py`) and launch
-  instructions are ready; the Debian baseline, analysis and complementary
-  publication/cache/log measurements remain open.
+- [x] Collect and evaluate the initial Debian 24-hour before/after baselines for
+  CPU, process I/O, RSS and container health. The ten-minute tmpfs control run
+  eliminated the recurring process-write increments seen before the mount was
+  applied. These observations do not establish physical disk traffic or an
+  identical-workload benchmark.
+- [ ] Complete a controlled before/after comparison with the same recorded
+  message workload, including idle periods, bursts and reconnects. Attribute
+  physical disk writes and separately measure cache/flush calls, MQTT
+  publications and Docker log volume; the initial host baselines are complete.
 - [x] Add a per-device index from BMW field names to Homie property IDs to avoid
   scanning the complete property registry for every incoming field.
 - [x] Avoid building RAW/Legacy topics when RAW output is disabled, parse incoming

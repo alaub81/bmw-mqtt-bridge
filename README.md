@@ -42,7 +42,8 @@ installation, configuration, operation and development documentation.
 
 The application runs in Docker using Alpine 3.24. The builder stage compiles the C++17 executable
 and installs development libraries; the runtime stage contains the bridge and
-OAuth tools. Use Docker with the Compose plugin (Docker 24+ is the documented
+OAuth tools. Both executables build with `-Wall -Wextra -Wpedantic -Wshadow -Werror`;
+compiler warnings fail local, CI and release builds. Use Docker with the Compose plugin (Docker 24+ is the documented
 baseline). Host deployment uses the prebuilt GitHub Container Registry image
 `ghcr.io/alaub81/bmw-mqtt-bridge` for `linux/amd64` and `linux/arm64`.
 The `Dockerfile` builds the Alpine image used by CI, releases and local development.
@@ -70,6 +71,9 @@ bmw-mqtt-bridge/
 ├── tests/
 │   ├── linter-check.sh
 │   ├── test-check.sh
+│   ├── sanitizer-check.sh
+│   ├── resource_soak.py
+│   ├── summarize_soak.py
 │   ├── install_lint_tools.py
 │   ├── lint.py
 │   ├── run_tests.py
@@ -706,9 +710,11 @@ The summary reports service/version attribution, status/health sample counts and
 separate segments for each collector generation. A generation change can mean a
 container restart, replacement or missing observation; it is not a restart count.
 Each segment includes time-weighted CPU with coverage, complete-process RSS
-first/last/maximum values, maximum Docker restart count, and approximate observed
-physical process-write bytes
-with coverage. Missing measurements stay `null`; rates are never integrated
+first/last/maximum values, maximum Docker restart count, and approximate
+attributed process-write bytes with coverage. These process counters do not
+establish physical disk traffic. Initial unavailable observations use generation
+0 and remain in the report, even if no container is observed during the run.
+Missing measurements stay `null`; rates are never integrated
 across generations. RSS changes alone do not establish a leak. Process writes
 exclude some Docker-daemon activity, and a partial run cannot establish multi-day
 stability. The summary does not count MQTT reconnects; generation, container
@@ -1230,6 +1236,26 @@ Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end
 test of a running container connected to BMW and an actual MQTT broker.
+
+### Sanitizer regression tests
+
+CI runs the same offline suite a second time with AddressSanitizer and
+UndefinedBehaviorSanitizer. Run it locally with the same dependencies and a C++
+compiler supporting both sanitizers:
+
+```bash
+bash tests/sanitizer-check.sh
+```
+
+The runner temporarily wraps `c++` to compile every C++ regression fixture with
+`-fsanitize=address,undefined`, debug information and frame pointers. Memory errors
+and undefined behavior fail the run, including diagnostics from subprocesses whose
+non-zero exit is expected by a negative-path test. The wrapper is
+removed on exit. The checks exercise compiled production extracts and test
+harnesses; Python, prebuilt third-party libraries and the complete running bridge are not
+instrumented. Production images keep their ordinary optimized build flags.
+These checks complement the separate real MQTT/HTTP integration tests and do not
+establish complete code coverage or detect every possible data race.
 
 ### Real MQTT integration tests
 

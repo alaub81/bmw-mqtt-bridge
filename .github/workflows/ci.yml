@@ -134,8 +134,12 @@ jobs:
           exit-code: '1'
 
   tests:
-    name: Offline regression tests
+    name: ${{ matrix.mode == 'standard' && 'Offline regression tests' || 'Sanitizer regression tests' }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [standard, sanitizers]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -147,7 +151,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends g++ jq openssl nodejs
           python -m pip install PyYAML==6.0.3
       - name: Run pre-deployment tests
+        if: matrix.mode == 'standard'
         run: ./tests/test-check.sh
+      - name: Run AddressSanitizer and UndefinedBehaviorSanitizer tests
+        if: matrix.mode == 'sanitizers'
+        run: bash ./tests/sanitizer-check.sh
 
   mqtt_integration:
     name: Real MQTT broker integration

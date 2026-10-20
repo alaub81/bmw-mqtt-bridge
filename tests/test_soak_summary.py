@@ -2,11 +2,17 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('summarize_soak', Path(__file__).with_name('summarize_soak.py'))
 summary = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(summary)
+
+COLLECTOR_SPEC = importlib.util.spec_from_file_location('resource_soak', Path(__file__).with_name('resource_soak.py'))
+collector = importlib.util.module_from_spec(COLLECTOR_SPEC)
+COLLECTOR_SPEC.loader.exec_module(collector)
 
 
 def row(elapsed, generation=1, **values):
@@ -20,6 +26,52 @@ def report(*rows):
 
 
 class SoakSummaryTests(unittest.TestCase):
+    def test_initial_unavailable_samples_from_collector_are_summarized(self):
+        observations = [
+            ({'schemaVersion': 2, 'status': 'unavailable'}, None, None),
+            ({'schemaVersion': 2, 'status': 'unavailable'}, None, None),
+            ({'schemaVersion': 2, 'status': 'running', 'health': 'healthy', 'cgroupCpuUsec': 100000},
+             ('private-container', 'first-start'), None),
+            ({'schemaVersion': 2, 'status': 'running', 'health': 'healthy', 'cgroupCpuUsec': 700000},
+             ('private-container', 'first-start'), None),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'samples.jsonl'
+            with (
+                patch('sys.argv', ['resource_soak', '--duration-seconds', '180', '--output', str(output)]),
+                patch.object(collector, 'validate_host'),
+                patch.object(collector, 'command', return_value='bmw-mqtt-bridge'),
+                patch.object(collector, 'sample', side_effect=observations),
+                patch.object(collector.time, 'monotonic', side_effect=[0, 0, 60, 120, 180]),
+                patch.object(collector.time, 'sleep'),
+            ):
+                self.assertEqual(collector.main(), 0)
+            with output.open() as source:
+                result = summary.summarize(source)
+        self.assertEqual(result['samples'], 4)
+        self.assertEqual(result['statusSamples'], {'unavailable': 2, 'running': 2})
+        self.assertEqual([segment['generation'] for segment in result['segments']], [0, 1])
+        missing, running = result['segments']
+        self.assertEqual(missing['samples'], 2)
+        self.assertEqual(missing['cpuCoverageSeconds'], 0)
+        self.assertIsNone(missing['cpuMeanPercentOneCore'])
+        self.assertIsNone(missing['processWriteBytesApprox'])
+        self.assertEqual(running['cpuCoverageSeconds'], 60)
+        self.assertEqual(running['cpuMeanPercentOneCore'], 1)
+
+    def test_entirely_unavailable_run_keeps_missing_metrics_unknown(self):
+        result = report(*[
+            dict(schemaVersion=2, elapsedSeconds=elapsed, generation=0, status='unavailable')
+            for elapsed in (0, 60, 120)
+        ])
+        self.assertEqual(result['statusSamples'], {'unavailable': 3})
+        self.assertEqual(result['spanSeconds'], 120)
+        segment = result['segments'][0]
+        self.assertEqual(segment['generation'], 0)
+        self.assertEqual(segment['durationSeconds'], 120)
+        for key in ('cpuMeanPercentOneCore', 'processWriteBytesApprox', 'rssMaxBytes'):
+            self.assertIsNone(segment[key])
+
     def test_weighted_cpu_memory_and_write_totals_have_explicit_coverage(self):
         result = report(
             row(0, restartCount=2, processRssSumBytes=100, processesExpected=1, processesRead=1),
@@ -53,6 +105,8 @@ class SoakSummaryTests(unittest.TestCase):
 
     def test_bad_empty_nonfinite_and_out_of_order_input_fails(self):
         for values in [[], ['broken'], ['null'], [json.dumps(row(float('nan')))],
+                       [json.dumps(row(0, -1))], [json.dumps(row(0, True))],
+                       [json.dumps(row(0, 0.5))],
                        [json.dumps(row(0)), json.dumps(row(0))],
                        [json.dumps(row(1, 2)), json.dumps(row(2, 1))]]:
             with self.subTest(values=values), self.assertRaises(ValueError):

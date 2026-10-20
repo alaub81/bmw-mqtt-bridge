@@ -37,12 +37,12 @@
 #   ./bmw_flow.sh
 #
 # Requirements:
-#   - bash, curl, jq, openssl
+#   - bash, curl, jq, openssl, bmw_token_store (next to this script)
 #
 # Behavior:
 #   - Read BMB_BMW_CLIENT_ID and BMB_BMW_GCID exclusively from the container environment.
 #   - Save tokens in BMB_BMW_TOKEN_DIR (default: /app/token).
-#   - Validate the complete token response before atomically replacing each file.
+#   - Validate the complete token response before atomically replacing the bundle.
 #
 # Outputs (permissions 0600):
 #   tokens.json (one atomic bundle with access, ID and refresh tokens)

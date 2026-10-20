@@ -26,7 +26,8 @@ def summarize(lines):
             if not isinstance(row, dict) or row.get('schemaVersion') != 2:
                 raise ValueError
             elapsed, generation = row.get('elapsedSeconds'), row.get('generation')
-            if not number(elapsed) or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            # The collector stays at generation 0 until it first observes a container.
+            if not number(elapsed) or not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
                 raise ValueError
             for name in ('status', 'health', 'composeService', 'bridgeVersion'):
                 if name in row and not isinstance(row[name], str):
