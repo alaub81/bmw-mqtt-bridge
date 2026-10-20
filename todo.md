@@ -27,8 +27,9 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
 - [x] Store the token set as one atomic `tokens.json` bundle shared by authentication
   and refresh. Migrate existing flat token files and test failures before/after
   commit, interrupted migration, corrupt state and restart selection.
-- [ ] Separate configuration, token management, MQTT lifecycle and telemetry into
-  independently compilable components; reduce Homie's dependency on bridge globals.
+- Not planned (project decision, 2026-10-20): split the main bridge into
+  independently compiled configuration, MQTT and telemetry components. Keep the
+  current structure for this small project.
 - [x] Correct the remaining openHAB documentation and widget descriptions from
   `telemetry#last-update` to `telemetry#lastUpdate`; check examples against current behavior.
 - [x] Add integration tests with a real local MQTT broker for delta updates,
