@@ -33,11 +33,13 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
   `telemetry#last-update` to `telemetry#lastUpdate`; check examples against current behavior.
 - [x] Add integration tests with a real local MQTT broker for delta updates,
   discovery, reconnect replay, retained state, Last Will and shutdown acknowledgements.
-- [ ] Complete failure/load coverage for real slow HTTP requests and multi-day
-  sustained operation. Implemented: storage EROFS/ENOSPC,
+- [ ] Complete a multi-day target-host soak and evaluate recorded results. The
+  read-only collector supports up to seven days with service/version attribution;
+  the offline summary and 72-hour launch procedure are ready. Implemented: real
+  slow HTTP bodies, production timeout, shutdown before headers/during a body,
+  storage EROFS/ENOSPC,
   interrupted writes, process exit before commit, flush/rename failure cleanup,
-  blocked background work and
-  repeated bursts with checkpointing and delta suppression.
+  blocked background work and repeated bursts with checkpointing and delta suppression.
 - [x] Add automated checks for openHAB widget expressions, state mappings, unit
   conversion and missing/invalid Item values, alongside YAML validation.
 - [x] Run the container without root, use a read-only root filesystem, drop

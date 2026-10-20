@@ -158,3 +158,14 @@ jobs:
         run: docker build -f tests/Dockerfile.integration -t bmb-mqtt-integration:test .
       - name: Test real broker lifecycle
         run: docker run --rm --network none bmb-mqtt-integration:test
+
+  http_integration:
+    name: Slow HTTP refresh integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build isolated HTTP test image
+        run: docker build -f tests/Dockerfile.http -t bmb-http-integration:test .
+      - name: Test delayed responses, timeout and shutdown
+        run: docker run --rm --network none bmb-http-integration:test

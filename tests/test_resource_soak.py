@@ -245,6 +245,30 @@ class ResourceSoakTests(unittest.TestCase):
             self.assertIsNone(rows[4]["cgroupIoPerSecond"])
             self.assertNotIn("private", output.read_text())
 
+    def test_seven_day_run_is_bounded_and_records_service_and_version(self):
+        now = 0
+
+        def sleep(seconds):
+            nonlocal now
+            now += seconds
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'seven-days.jsonl'
+            with (
+                patch('sys.argv', ['resource_soak', '--duration-seconds', '604800',
+                      '--interval-seconds', '3600', '--bridge-version', 'test-revision',
+                      '--output', str(output)]),
+                patch.object(resource_soak, 'sample', return_value=({}, None, None)),
+                patch.object(resource_soak.time, 'monotonic', side_effect=lambda: now),
+                patch.object(resource_soak.time, 'sleep', side_effect=sleep),
+            ):
+                self.assertEqual(resource_soak.main(), 0)
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual(len(rows), 169)
+            self.assertEqual(rows[-1]['elapsedSeconds'], 604800)
+            self.assertTrue(all(row['composeService'] == 'bmw-mqtt-bridge' for row in rows))
+            self.assertTrue(all(row['bridgeVersion'] == 'test-revision' for row in rows))
+
     def test_custom_service_and_compose_file_are_forwarded(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "samples.jsonl"
@@ -263,7 +287,7 @@ class ResourceSoakTests(unittest.TestCase):
                 sample.assert_called_once_with(["docker", "compose", "-f", "custom.yml"], "bridge")
 
     def test_missing_service_and_invalid_limits_fail_before_output_creation(self):
-        for arguments in (["--service", "missing"], ["--duration-seconds", "86401"],
+        for arguments in (["--service", "missing"], ["--duration-seconds", "604801"],
                           ["--interval-seconds", "0"], ["--service", "bad service"]):
             with (
                 self.subTest(arguments=arguments),

@@ -241,10 +241,11 @@ def main():
     parser.add_argument("--interval-seconds", type=int, default=60)
     parser.add_argument("--output", type=Path, default=Path("/dev/shm/bmb-resource-soak.jsonl"))
     parser.add_argument("--compose-file", type=str)
+    parser.add_argument("--bridge-version", default="unknown", help="deployed image tag or revision, without credentials")
     parser.add_argument("--service", default="bmw-mqtt-bridge")
     args = parser.parse_args()
-    if not 1 <= args.duration_seconds <= 86400 or not 1 <= args.interval_seconds <= 3600:
-        parser.error("duration must be 1..86400 seconds; interval must be 1..3600 seconds")
+    if not 1 <= args.duration_seconds <= 604800 or not 1 <= args.interval_seconds <= 3600:
+        parser.error("duration must be 1..604800 seconds; interval must be 1..3600 seconds")
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", args.service):
         parser.error("service must be a valid Compose service name")
     validate_host(parser)
@@ -263,6 +264,8 @@ def main():
         while True:
             row, identity, process_counters = sample(compose, args.service)
             measured = time.monotonic()
+            row["composeService"] = args.service
+            row["bridgeVersion"] = args.bridge_version
             row["elapsedSeconds"] = round(measured - started, 3)
             if identity != previous_identity:
                 generation += 1

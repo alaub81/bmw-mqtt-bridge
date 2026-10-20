@@ -1,0 +1,7 @@
+FROM alpine:3.24
+RUN apk add --no-cache g++ curl-dev python3
+WORKDIR /test
+COPY resources/src /test/src
+COPY tests/integration_http.py /test/
+RUN python3 integration_http.py --build
+CMD ["python3", "/test/integration_http.py"]

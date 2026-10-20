@@ -642,7 +642,8 @@ nohup python3 resource_soak.py \
 ```
 
 Use the actual Compose service name for `--service` if yours differs. The
-collector defaults to `bmw-mqtt-bridge`, 24 hours, 60 seconds and
+collector supports up to seven days (604800 seconds) and defaults to
+`bmw-mqtt-bridge`, 24 hours, 60 seconds and
 `/dev/shm/bmb-resource-soak.jsonl`. Existing measurement files are never
 overwritten; choose a new filename for each run, including its redirected log.
 Check the log immediately for startup errors. If elevated permissions are
@@ -669,6 +670,50 @@ restarts, missing reads, process/device changes or counter resets.
 This baseline covers actual CPU and attributed I/O over time. Measuring MQTT
 publication counts, cache/flush calls and Docker log volume still needs separate
 instrumentation or a controlled replay before making a full before/after comparison.
+
+### Multi-day soak and evaluation
+
+The same read-only collector supports 72-hour and seven-day runs. Every new row
+records `composeService` and `bridgeVersion`; set `--bridge-version` to the actual
+deployed image tag or commit (otherwise it is `unknown`). Keep outputs, log level
+and workload unchanged during a comparison. Copy both `tests/resource_soak.py`
+and `tests/summarize_soak.py` to the Linux deployment host before running:
+
+```bash
+nohup python3 resource_soak.py \
+  --compose-file docker-compose.yml \
+  --service bmw-mqtt-bridge \
+  --bridge-version 'DEIN-IMAGE-TAG' \
+  --duration-seconds 259200 --interval-seconds 60 \
+  --output /dev/shm/bmb-resource-soak-72h.jsonl \
+  > /dev/shm/bmb-resource-soak-72h.log 2>&1 < /dev/null &
+```
+
+Replace `DEIN-IMAGE-TAG` with the deployed version. For seven days use
+`--duration-seconds 604800` and new output/log filenames. At one-minute intervals
+this produces at most 10081 samples plus any shutdown overhead; allow sufficient
+RAM in `/dev/shm`. No container is restarted or reconfigured. A reboot ends the
+collector and clears tmpfs; copy results to persistent storage when finished.
+The command is a prepared host procedure, not evidence of a completed soak.
+
+After completion, or on a copied partial file:
+
+```bash
+python3 summarize_soak.py /dev/shm/bmb-resource-soak-72h.jsonl
+```
+
+The summary reports service/version attribution, status/health sample counts and
+separate segments for each collector generation. A generation change can mean a
+container restart, replacement or missing observation; it is not a restart count.
+Each segment includes time-weighted CPU with coverage, complete-process RSS
+first/last/maximum values, maximum Docker restart count, and approximate observed
+physical process-write bytes
+with coverage. Missing measurements stay `null`; rates are never integrated
+across generations. RSS changes alone do not establish a leak. Process writes
+exclude some Docker-daemon activity, and a partial run cannot establish multi-day
+stability. The summary does not count MQTT reconnects; generation, container
+restarts and health are the available context, while reconnect logs need separate
+review if required. Older files without attribution remain `unknown`.
 
 ### Background refresh and persistence
 
@@ -1206,6 +1251,25 @@ flushes and failed renames, checking preservation of old data and temporary-file
 cleanup. Separate restart tests interrupt bundle commits before and after rename,
 retry interrupted migrations and reject corrupt canonical state. Repeated bursts exercise queue overflow, checkpointing and final state
 across two simulated hours; this is not a multi-day soak or a BMW HTTP integration.
+
+### Slow HTTP refresh integration tests
+
+A separate image compiles the production refresh/form/callback code and uses real
+libcurl against a loopback HTTP test server. Only the endpoint is replaced;
+production HTTP timeouts remain unchanged. No BMW credentials, host ports or
+external network are used:
+
+```bash
+docker build -f tests/Dockerfile.http -t bmb-http-integration:test .
+docker run --rm --network none bmb-http-integration:test
+```
+
+The tests cover a slow successful body, a stalled body hitting the 20-second
+production timeout, and shutdown before headers or during a partial body. They
+check continued background-job polling, single-flight exclusion, unchanged active
+credentials, atomic token commits and preservation of existing tokens on failure.
+CI runs them separately; the suite takes roughly 25 seconds. These are refresh
+worker integration tests, not a complete BMW/MQTT deployment test.
 
 ## Security
 
