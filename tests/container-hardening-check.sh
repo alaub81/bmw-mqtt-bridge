@@ -41,6 +41,18 @@ docker run "${flags[@]}" "$image" /bin/sh -ec '
   mv /app/token/id_token.txt.tmp /app/token/id_token.txt
   test "$(cat /app/token/id_token.txt)" = rotated
 '
+# Start the actual bridge with a synthetic unexpired JWT and legacy token files.
+# Network isolation prevents any BMW or deployment-broker traffic.
+docker run "${flags[@]}" -e BMB_BMW_CLIENT_ID=test-client -e BMB_BMW_GCID=test-account \
+  -e BMB_BMW_HOST=127.0.0.1 -e BMB_MQTT_LOCAL_HOST=127.0.0.1 "$image" /bin/bash -ec '
+  printf "%s" header.eyJleHAiOjQxMDI0NDQ4MDB9.signature > /app/token/id_token.txt
+  printf "%s" migration-refresh > /app/token/refresh_token.txt
+  timeout 3 /app/bmw_mqtt_bridge > /tmp/migration.log 2>&1 || true
+  test "$(jq -r .refresh_token /app/token/tokens.json)" = migration-refresh
+  test "$(jq -r .access_token /app/token/tokens.json)" = ""
+  test ! -e /app/token/id_token.txt
+  test ! -e /app/token/refresh_token.txt
+'
 # Exercise the actual OAuth helper with deterministic responses, without networking.
 docker run "${flags[@]}" -e BMB_BMW_CLIENT_ID=test-client -e BMB_BMW_GCID=test-account "$image" /bin/bash -ec '
   curl() {
@@ -52,7 +64,7 @@ docker run "${flags[@]}" -e BMB_BMW_CLIENT_ID=test-client -e BMB_BMW_GCID=test-a
   }
   export -f curl
   /app/bmw_flow.sh <<< ""
-  test "$(cat /app/token/id_token.txt)" = test-id
-  test "$(stat -c %a /app/token/id_token.txt)" = 600
+  test "$(jq -r .id_token /app/token/tokens.json)" = test-id
+  test "$(stat -c %a /app/token/tokens.json)" = 600
 '
 echo 'Non-root, read-only runtime and legacy-volume migration passed.'

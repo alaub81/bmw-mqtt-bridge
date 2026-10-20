@@ -24,17 +24,17 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
 - [x] Move runtime token refresh and cache persistence off the main loop. Use
   single-flight jobs, owned snapshots and generation tracking; retain main-thread
   credential adoption/MQTT management and join workers on shutdown.
-- [ ] Store the token set consistently as one recoverable state. Consider an atomic
-  token bundle or versioned generations, with migration from the existing three
-  files and tests for failures during commit and restart recovery.
+- [x] Store the token set as one atomic `tokens.json` bundle shared by authentication
+  and refresh. Migrate existing flat token files and test failures before/after
+  commit, interrupted migration, corrupt state and restart selection.
 - [ ] Separate configuration, token management, MQTT lifecycle and telemetry into
   independently compilable components; reduce Homie's dependency on bridge globals.
 - [x] Correct the remaining openHAB documentation and widget descriptions from
   `telemetry#last-update` to `telemetry#lastUpdate`; check examples against current behavior.
 - [x] Add integration tests with a real local MQTT broker for delta updates,
   discovery, reconnect replay, retained state, Last Will and shutdown acknowledgements.
-- [ ] Complete failure/load coverage for token-set restart recovery, real slow HTTP
-  requests and multi-day sustained operation. Implemented: storage EROFS/ENOSPC,
+- [ ] Complete failure/load coverage for real slow HTTP requests and multi-day
+  sustained operation. Implemented: storage EROFS/ENOSPC,
   interrupted writes, process exit before commit, flush/rename failure cleanup,
   blocked background work and
   repeated bursts with checkpointing and delta suppression.

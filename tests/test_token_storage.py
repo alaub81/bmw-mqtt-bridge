@@ -12,6 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TokenStorageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.build = tempfile.TemporaryDirectory()
+        cls.binary = Path(cls.build.name) / 'bmw_token_store'
+        subprocess.run(['c++', '-std=c++17', '-pthread', '-I', str(ROOT / 'resources/src'),
+                        str(ROOT / 'resources/src/bmw_token_store.cpp'), '-o', str(cls.binary)],
+                       check=True, capture_output=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.build.cleanup()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -19,6 +31,9 @@ class TokenStorageTests(unittest.TestCase):
         self.mock_bin = self.base / 'bin'
         self.mock_bin.mkdir()
         self.state = self.base / 'state'
+        self.flow = self.base / 'bmw_flow.sh'
+        shutil.copyfile(ROOT / 'resources/bmw_flow.sh', self.flow)
+        shutil.copy(self.binary, self.base / 'bmw_token_store')
         self.tokens = {'access_token': 'new-access', 'id_token': 'new-id',
                        'refresh_token': 'new-refresh'}
         self.mock_command('curl', r'''#!/bin/sh
@@ -51,7 +66,7 @@ esac
                    BMB_BMW_TOKEN_DIR=str(self.state), TEST_TOKEN_RESPONSE=str(response_path))
         env.update(overrides)
         return subprocess.run(
-            ['bash', '-c', 'umask 000; exec bash "$1"', '_', str(ROOT / 'resources/bmw_flow.sh')],
+            ['bash', '-c', 'umask 000; exec bash "$1"', '_', str(self.flow)],
             input='\n', env=env, capture_output=True, text=True, timeout=10,
         )
 
@@ -73,11 +88,11 @@ esac
                         self.addCleanup(reader.close)
                 result = self.run_authentication()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for token, content in self.tokens.items():
-                    path = self.state / f'{token}.txt'
-                    self.assertEqual(path.read_text().strip(), content)
-                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-                    if existing:
+                path = self.state / 'tokens.json'
+                self.assertEqual(json.loads(path.read_text()), dict(self.tokens, version=1))
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                if existing:
+                    for token in self.tokens:
                         self.assertEqual(readers[token].read(), f'old-{token}')
                 self.assertFalse(list(self.state.glob('.bmw-tokens.*')))
 
@@ -99,49 +114,32 @@ esac
                 self.assertNotIn('Tokens received and saved', result.stdout)
                 self.assert_existing_tokens_unchanged()
 
-    @unittest.skipUnless(shutil.which('jq') and shutil.which('openssl'), 'OAuth helper tools unavailable')
-    def test_staging_failure_leaves_all_existing_tokens_unchanged(self):
+    def test_bundle_commit_failure_preserves_previous_generation(self):
         self.existing_tokens()
-        self.mock_command('jq', r'''#!/bin/sh
-if [ "$1" = '-r' ] && [ "$2" = '--arg' ] && [ "$4" = 'id_token' ]; then
-  printf '%s' 'partial-token'
-  exit 1
-fi
-exec "$TEST_REAL_JQ" "$@"
-''')
-        result = self.run_authentication(TEST_REAL_JQ=shutil.which('jq'))
-        self.assertNotEqual(result.returncode, 0)
-        self.assert_existing_tokens_unchanged()
-
-    @unittest.skipUnless(shutil.which('jq') and shutil.which('openssl'), 'OAuth helper tools unavailable')
-    def test_failed_rename_preserves_original_files_and_cleans_up(self):
-        self.existing_tokens()
-        self.mock_command('mv', '#!/bin/sh\nexit 1\n')
+        bundle = self.state / 'tokens.json'
+        bundle.write_text(json.dumps(dict(self.tokens, version=1)))
+        previous = bundle.read_bytes()
+        (self.base / 'bmw_token_store').write_text('#!/bin/sh\nexit 1\n')
         result = self.run_authentication()
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(bundle.read_bytes(), previous)
         self.assert_existing_tokens_unchanged()
 
-    @unittest.skipUnless(shutil.which('jq') and shutil.which('openssl'), 'OAuth helper tools unavailable')
-    def test_directory_target_is_rejected_before_replacing_other_tokens(self):
+    def test_directory_bundle_target_preserves_legacy_files_and_cleans_staging(self):
         self.existing_tokens()
-        target = self.state / 'id_token.txt'
-        target.unlink()
+        target = self.state / 'tokens.json'
         target.mkdir()
         (target / 'sentinel').write_text('keep-me')
         result = self.run_authentication()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Token path is a directory', result.stderr)
         self.assertEqual((target / 'sentinel').read_text(), 'keep-me')
-        for token in ('access_token', 'refresh_token'):
-            self.assertEqual((self.state / f'{token}.txt').read_text(), f'old-{token}')
-        self.assertFalse(list(self.state.glob('.bmw-tokens.*')))
+        self.assert_existing_tokens_unchanged()
+        self.assertFalse(list(self.state.glob('tokens.json.tmp.*')))
 
     @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
     def test_refresh_writer_restricts_permissions_and_preserves_failed_target(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
-        # Select the definition rather than the forward declaration used by Homie.
-        helper = source[source.rindex('static bool write_file_atomic('):]
-        helper = helper.split('static token_validation::Tokens fetch_and_store_tokens() {')[0]
+        source = (ROOT / 'resources/src/atomic_file.hpp').read_text()
+        helper = source[source.index('static bool write_file_atomic('):]
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             test_source = base / 'writer.cpp'

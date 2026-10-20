@@ -14,3 +14,5 @@ site/
 .lint-venv/
 .lint-tools/
 .ruff_cache/
+**/tokens.json
+**/tokens.json.tmp.*

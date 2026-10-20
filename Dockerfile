@@ -32,6 +32,7 @@ RUN addgroup -g 10001 bmb && adduser -D -H -u 10001 -G bmb bmb \
 
 WORKDIR /app
 COPY --chmod=0755 --from=builder /build/src/bmw_mqtt_bridge /app/bmw_mqtt_bridge
+COPY --chmod=0755 --from=builder /build/src/bmw_token_store /app/bmw_token_store
 COPY --chmod=0755 ./resources/bmw_flow.sh .
 COPY --chmod=0755 ./resources/docker-entrypoint.sh .
 

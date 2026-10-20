@@ -15,3 +15,5 @@ __pycache__/
 .lint-tools/
 .ruff_cache/
 docker-compose.yml
+**/tokens.json
+**/tokens.json.tmp.*

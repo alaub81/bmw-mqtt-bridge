@@ -50,8 +50,9 @@ static curl_slist headers;
 static std::string response, current_refresh = "current-refresh";
 static std::string* response_target = nullptr;
 static long status = 200;
+static bool write_failure = false;
 static std::map<std::string, std::string> writes;
-static std::string REFRESH_TOKEN_FILE = "/state/refresh_token.txt", ID_TOKEN_FILE = "/state/id_token.txt";
+static std::string ID_TOKEN_FILE = "/state/id_token.txt";
 static std::string BMB_BMW_CLIENT_ID = "audit-client", g_id_token = "previous-id";
 static std::atomic<long> g_id_token_exp{100};
 CURL* curl_easy_init() { return &handle; }
@@ -64,10 +65,22 @@ template<typename T> void curl_easy_setopt(CURL*, int, T value) {
 CURLcode curl_easy_perform(CURL*) { *response_target = response; return CURLE_OK; }
 void curl_easy_getinfo(CURL*, int, long* code) { *code = status; }
 const char* curl_easy_strerror(int) { return "injected error"; }
-static std::string read_file(const std::string&) { return current_refresh; }
-static std::string trim(std::string value) { return value; }
 static std::string build_form_body(const std::vector<std::pair<std::string, std::string>>&) { return "test-form"; }
-static bool write_file_atomic(const std::string& path, const std::string& value) { writes[path] = value; return true; }
+static bool write_file_atomic(const std::string& path, const std::string& value) {
+    if (write_failure) return false;
+    writes[path] = value; return true;
+}
+namespace token_store {
+static bool load(const std::filesystem::path&, token_validation::Tokens& tokens) {
+    tokens.refresh = current_refresh;
+    return token_validation::valid_token(current_refresh);
+}
+template<typename Writer>
+static bool save(const std::filesystem::path& directory, const token_validation::Tokens& tokens, Writer writer) {
+    return writer((directory / "tokens.json").string(), nlohmann::json{
+        {"version", 1}, {"id_token", tokens.id}, {"refresh_token", tokens.refresh}, {"access_token", tokens.access}}.dump());
+}
+}
 '''
         harness += 'enum { ' + ', '.join(options) + ' };\n' + callback + refresh + r'''
 int main(int argc, char** argv) {
@@ -78,7 +91,7 @@ int main(int argc, char** argv) {
         AsyncJob<token_validation::Tokens> job;
         assert(job.start(fetch_and_store_tokens));
         const auto tokens = job.finish();
-        assert(tokens && tokens->expires > time(nullptr) && writes.size() == 3);
+        assert(tokens && tokens->expires > time(nullptr) && writes.size() == 1);
         assert(g_id_token == "previous-id" && g_id_token_exp == 100); // Worker never changes active credentials.
         return 0;
     }
@@ -102,12 +115,17 @@ int main(int argc, char** argv) {
         assert(curl_write_cb(&byte, 1, 1, &output) == 0);
         return 0;
     }
+    if (mode == "write-error") write_failure = true;
     if (mode == "http-error") status = 500;
     if (mode == "bad-refresh-file") current_refresh = "embedded whitespace";
     const bool success = refresh_tokens();
     if (mode == "valid") {
-        assert(success && writes.size() == 3 && g_id_token != "previous-id");
+        assert(success && writes.size() == 1 && g_id_token != "previous-id");
         assert(g_id_token_exp > time(nullptr));
+        const auto bundle = nlohmann::json::parse(writes.at("/state/tokens.json"));
+        const auto received = nlohmann::json::parse(response);
+        for (const auto* key : {"id_token", "refresh_token", "access_token"})
+            assert(bundle.at(key) == received.at(key));
     } else {
         assert(!success && writes.empty() && g_id_token == "previous-id" && g_id_token_exp == 100);
     }
@@ -168,8 +186,12 @@ int main(int argc, char** argv) {
                 result = self.run_case('invalid', response)
                 self.assertNotIn('sensitive-', result.stdout + result.stderr)
 
-    def test_valid_refresh_updates_memory_and_all_token_files(self):
+    def test_valid_refresh_updates_memory_and_one_token_bundle(self):
         self.run_case('valid', json.dumps(self.valid_response()))
+
+    def test_failed_bundle_commit_does_not_adopt_new_credentials(self):
+        result = self.run_case('write-error', json.dumps(self.valid_response()))
+        self.assertNotIn('sensitive-', result.stdout + result.stderr)
 
     def test_refresh_worker_returns_owned_tokens_without_changing_active_credentials(self):
         self.run_case('worker-refresh', json.dumps(self.valid_response()))

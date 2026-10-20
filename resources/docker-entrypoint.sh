@@ -9,7 +9,7 @@ RT_FILE="${STATE_DIR}/refresh_token.txt"
 echo "[entrypoint] Expecting tokens in: BMB_BMW_TOKEN_DIR=${STATE_DIR}"
 
 # Restrict existing tokens too, including before running the authentication helper.
-for token_file in "$ID_FILE" "$RT_FILE" "$STATE_DIR/access_token.txt"; do
+for token_file in "$ID_FILE" "$RT_FILE" "$STATE_DIR/access_token.txt" "$STATE_DIR/tokens.json"; do
   if [[ -f "$token_file" ]]; then
     chmod 0600 "$token_file"
   fi
@@ -23,7 +23,8 @@ if [[ $# -gt 0 && "$1" != "/app/bmw_mqtt_bridge" ]]; then
 fi
 
 # Tokens are created by bmw_flow.sh in the persistent data_bmb_token volume.
-if [[ ! -s "$ID_FILE" || ! -s "$RT_FILE" ]]; then
+if [[ ! -e "$STATE_DIR/tokens.json" && ! -L "$STATE_DIR/tokens.json" ]] &&
+   [[ ! -s "$ID_FILE" || ! -s "$RT_FILE" ]]; then
   echo "[entrypoint] Token pair missing, incomplete or empty in ${STATE_DIR}."
   echo "Please perform the initial authentication, e.g.:"
   echo "  docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh"

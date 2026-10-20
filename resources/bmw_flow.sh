@@ -45,9 +45,7 @@
 #   - Validate the complete token response before atomically replacing each file.
 #
 # Outputs (permissions 0600):
-#   access_token.txt
-#   id_token.txt
-#   refresh_token.txt
+#   tokens.json (one atomic bundle with access, ID and refresh tokens)
 #
 # Notes:
 #   - This script is interactive: it prints a verification URL you must open
@@ -156,25 +154,14 @@ while (( LEFT > 0 )); do
       exit 1
     fi
 
-    # Stage all files on the same filesystem before replacing any existing token.
-    STAGING_DIR="$(mktemp -d "$OUT_DIR/.bmw-tokens.XXXXXX")"
-    trap 'rm -rf -- "$STAGING_DIR"' EXIT
-    for token in access_token id_token refresh_token; do
-      if [[ -d "$OUT_DIR/$token.txt" ]]; then
-        echo "✖ Token path is a directory: $OUT_DIR/$token.txt" >&2
-        exit 1
-      fi
-      jq -r --arg token "$token" '.[$token]' <<<"$TOK" > "$STAGING_DIR/$token.txt"
-    done
-    # Each rename is atomic; the three files are not a single transaction.
-    for token in access_token id_token refresh_token; do
-      mv -f -- "$STAGING_DIR/$token.txt" "$OUT_DIR/$token.txt"
-    done
+    # One shared, durable commit for the complete token set.
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    "$SCRIPT_DIR/bmw_token_store" "$OUT_DIR" <<<"$TOK"
 
     echo
     echo "✔ Tokens received and saved."
     echo "Saved tokens in: $OUT_DIR"
-    echo "→ MQTT password = contents of $OUT_DIR/id_token.txt"
+    echo "→ MQTT credential is stored in $OUT_DIR/tokens.json"
     exit 0
   else
     DESC="$(jq -r '.error_description // ""' <<<"$TOK")"

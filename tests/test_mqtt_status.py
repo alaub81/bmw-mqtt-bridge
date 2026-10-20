@@ -13,7 +13,7 @@ class MqttStatusTests(unittest.TestCase):
     def test_status_connection_and_retry_handling(self):
         source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
         publisher = source.split('// Debounced status publisher for MQTT_LOCAL_STATUS_TOPIC')[1]
-        publisher = publisher.split('static std::string read_file')[0]
+        publisher = publisher.split('static std::string sanitize_key')[0]
         callbacks = source.split('static void on_local_connect')[1]
         callbacks = 'static void on_local_connect' + callbacks.split('static void on_local_log')[0]
         with tempfile.TemporaryDirectory() as temporary:

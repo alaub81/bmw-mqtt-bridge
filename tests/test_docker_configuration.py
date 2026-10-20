@@ -51,6 +51,18 @@ class DockerConfigurationTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((self.state / filename).stat().st_mode),
                              0o600)
 
+    def test_bundle_only_state_passes_bootstrap_and_permissions_are_restricted(self):
+        self.state.mkdir()
+        bundle = self.state / 'tokens.json'
+        bundle.write_text(json.dumps({'version': 1, 'id_token': 'bundle-id',
+                                      'refresh_token': 'bundle-refresh', 'access_token': 'bundle-access'}))
+        bundle.chmod(0o644)
+        result = self.run_entrypoint()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('bridge-started', result.stdout)
+        self.assertEqual(stat.S_IMODE(bundle.stat().st_mode), 0o600)
+        self.assertFalse((self.state / 'id_token.txt').exists())
+
     def test_restart_keeps_rotated_tokens(self):
         self.create_tokens()
         self.assertEqual(self.run_entrypoint().returncode, 0)

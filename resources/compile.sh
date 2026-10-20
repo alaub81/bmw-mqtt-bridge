@@ -11,4 +11,6 @@ g++ -std=c++17 -O2 -pthread \
   bmw_mqtt_bridge.cpp -o bmw_mqtt_bridge \
   $(pkg-config --cflags --libs libmosquitto) -lcurl
 
+g++ -std=c++17 -O2 -pthread bmw_token_store.cpp -o bmw_token_store
+
 echo "Build successful: /build/src/bmw_mqtt_bridge"

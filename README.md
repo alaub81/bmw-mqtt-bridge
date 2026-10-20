@@ -55,6 +55,9 @@ bmw-mqtt-bridge/
 ├── resources/
 │   ├── src/
 │   │   ├── bmw_mqtt_bridge.cpp
+│   │   ├── bmw_token_store.cpp
+│   │   ├── token_store.hpp
+│   │   ├── atomic_file.hpp
 │   │   ├── async_job.hpp
 │   │   ├── bridge_log.hpp
 │   │   ├── token_validation.hpp
@@ -248,29 +251,36 @@ prefixes its actual name with the project name (for example,
 `bmw-mqtt-bridge_data_bmb_token`). Configuration is supplied from the host `.env`
 through environment variables. No token secrets or host bind mount are required.
 
-The tokens live at these paths inside the container:
+The complete token set lives in one file inside the container:
 
 ```text
-/app/token/id_token.txt
-/app/token/refresh_token.txt
+/app/token/tokens.json
 ```
 
-The bridge renews tokens automatically and saves them with permissions `0600`
-(read/write for the owner only). Authentication uses the same permissions for
-all three token files, including `access_token.txt`. On startup, the entrypoint
-restricts existing token files to `0600` and removes the obsolete
-`token_refresh_response.json`; the bridge no longer stores that response.
-Before saving, authentication validates that the response contains all three
-tokens as non-empty strings without whitespace. It writes all temporary files
-in the token volume before replacing the existing files by atomic renames.
-Invalid responses or staging failures leave existing tokens unchanged, and
-temporary files are cleaned up on exit. Each file is replaced atomically;
-the three files are not a single transaction, so keep the bridge stopped during
-reauthentication as shown below.
+Both authentication and runtime refresh use the same storage code. The bundle
+contains `version: 1`, `id_token`, `refresh_token` and `access_token`, with owner-only
+permissions (`0600`). The writer stages the complete JSON beside the destination,
+flushes it, atomically renames it and flushes the parent directory. A process
+interrupted around the commit leaves either the whole old set or the whole new
+set; temporary files are never loaded. A directory-sync failure is reported even
+when the rename has already committed, since durability cannot then be confirmed.
+
+On first bridge startup, existing `id_token.txt` and `refresh_token.txt` directly in
+the token directory are imported together; `access_token.txt` is optional for this
+migration. Successful commits remove the old files. If cleanup is interrupted,
+`tokens.json` remains authoritative. Once a bundle exists, corrupt or unsupported
+content fails closed instead of falling back to stale legacy files. Expired ID
+tokens still trigger the normal refresh flow. An incomplete legacy pair requires
+reauthentication; older file names and nested directories are not imported.
+
+Authentication validates all three returned tokens before saving. Invalid
+responses or failures before commit preserve the previous set. The entrypoint
+restricts bundle and legacy file permissions and removes the obsolete sensitive
+`token_refresh_response.json`. Keep the bridge stopped during reauthentication
+so two processes cannot rotate credentials concurrently. Back up the entire token
+volume before updating; rolling back to an older image requires restoring its
+matching pre-migration backup.
 All state files live directly in `/app/token`, without an additional subdirectory.
-The entrypoint requires a complete pair at these paths. It does not automatically
-migrate older file names or subdirectories. Existing tokens are never overwritten
-by the entrypoint; incomplete pairs require reauthentication or explicit migration.
 The volume survives container replacement and `docker compose down`.
 `docker compose down -v` deletes it and requires authentication again.
 
@@ -435,7 +445,7 @@ container. Neither the bridge nor the authentication helper loads a file as
 fallback. An old `.env` in the token volume is ignored.
 
 Tokens are stored directly in the persistent volume mounted at `/app/token`.
-Initial authentication creates them; the bridge refreshes them itself. See
+Initial authentication creates `tokens.json`; the bridge refreshes the complete bundle itself. See
 [Docker installation](#docker-installation).
 
 ### Container image
@@ -1166,7 +1176,7 @@ tests, an empty suite or failed tests return a non-zero exit code.
 The separate CI job **Offline regression tests** invokes exactly
 `./tests/test-check.sh`. These tests validate token handling and legacy-state rejection,
 environment-only configuration, GHCR image selection and shared development settings,
-token response validation, permissions and atomic writes, BMW server backoff
+token response validation, permissions, atomic bundle commits and legacy migration, BMW server backoff
 and library reconnect suppression, TLS settings,
 MQTT status and shutdown handling, background job completion and snapshot generations,
 JWT/refresh validation and response limits,
@@ -1193,7 +1203,8 @@ acknowledged shutdown. The offline suite additionally executes widget expression
 from the actual YAML using Node.js, including opening states, missing Items and
 unit conversions. Storage fault injection covers EROFS, ENOSPC, EINTR, failed
 flushes and failed renames, checking preservation of old data and temporary-file
-cleanup. Repeated bursts exercise queue overflow, checkpointing and final state
+cleanup. Separate restart tests interrupt bundle commits before and after rename,
+retry interrupted migrations and reject corrupt canonical state. Repeated bursts exercise queue overflow, checkpointing and final state
 across two simulated hours; this is not a multi-day soak or a BMW HTTP integration.
 
 ## Security

@@ -151,7 +151,6 @@ static int         BMB_MQTT_RAW_TOPICS = 1;
 static int         BMB_MQTT_HOMIE = 0;
 static int         BMB_BMW_STATUS_STABLE_DELAY = 5; // seconds; 0 = no delay
 static std::string ID_TOKEN_FILE;
-static std::string REFRESH_TOKEN_FILE;
 static int         BMB_MQTT_RETAIN = 0; // 0 = no retain (default), 1 = retain
 
 // ===================== Globals =====================
@@ -407,20 +406,6 @@ static bool publish_shutdown_status() {
     return acknowledged;
 }
 
-static std::string read_file(const std::string& path) {
-    std::ifstream f(path);
-    if (!f) return {};
-    std::ostringstream ss; ss << f.rdbuf();
-    return ss.str();
-}
-
-static std::string trim(std::string s) {
-    auto isws = [](unsigned char c){ return c=='\n'||c=='\r'||c=='\t'||c==' '; };
-    while (!s.empty() && isws(s.back())) s.pop_back();
-    size_t i=0; while (i<s.size() && isws(s[i])) ++i;
-    return s.substr(i);
-}
-
 // Replace characters that would change the topic hierarchy.
 static std::string sanitize_key(std::string s){
     for (auto& c : s){
@@ -482,7 +467,8 @@ static void on_local_log(struct mosquitto*, void*, int level, const char* messag
 }
 
 // Shared by raw telemetry, split fields and status publishers during client replacement.
-static bool write_file_atomic(const std::string& final_path, const std::string& content);
+#include "atomic_file.hpp"
+#include "token_store.hpp"
 #include "homie_publisher.hpp"
 static std::unique_ptr<HomiePublisher> g_homie;
 
@@ -807,9 +793,8 @@ int main() try {
     if (homie_queue_limit < 1 || homie_queue_limit > 65536)
         throw std::invalid_argument("BMB_HOMIE_QUEUE_LIMIT must be between 1 and 65536 updates");
 
-    // fixed token files (no env overrides)
+    // Fixed token directory; token_store selects the canonical bundle.
     ID_TOKEN_FILE       = (std::filesystem::path(TDIR) / "id_token.txt").string();
-    REFRESH_TOKEN_FILE  = (std::filesystem::path(TDIR) / "refresh_token.txt").string();
     // Normalize the topic prefix and apply its default.
     if (BMB_MQTT_LOCAL_PREFIX.empty()) {
         BMB_MQTT_LOCAL_PREFIX = "bmw/";             // Fallback: keeps bmw/status as default
@@ -855,13 +840,15 @@ int main() try {
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) return 2;
 
     // initial tokens
-    g_id_token = trim(read_file(ID_TOKEN_FILE));
-    const std::string refresh_token = trim(read_file(REFRESH_TOKEN_FILE));
-    if(g_id_token.empty() || refresh_token.empty()){
-        BMB_LOG(error) << "✖ id_token.txt or refresh_token.txt missing/empty in " << TDIR << "\n";
+    token_validation::Tokens initial_tokens;
+    if (!token_store::load(TDIR, initial_tokens) ||
+        (!std::filesystem::exists(std::filesystem::path(TDIR) / "tokens.json") &&
+         !token_store::save(TDIR, initial_tokens, write_file_atomic))) {
+        BMB_LOG(error) << "✖ Cannot load or migrate token state in " << TDIR << "\n";
         curl_global_cleanup();
         return 1;
     }
+    g_id_token = std::move(initial_tokens.id);
     g_id_token_exp = jwt_exp_unix(g_id_token);
     if (g_id_token_exp.load() <= time(nullptr)) {
         BMB_LOG(warning) << "✖ invalid or expired id_token → trying refresh\n";
@@ -1035,85 +1022,15 @@ static std::string build_form_body(const std::vector<std::pair<std::string,std::
     return oss.str();
 }
 
-static bool write_file_atomic(const std::string& final_path,
-                              const std::string& data)
-{
-    namespace fs = std::filesystem;
-
-    fs::path fpath(final_path);
-    fs::path dir = fpath.parent_path();
-    std::error_code ec;
-    fs::create_directories(dir, ec); // File creation below reports failures.
-
-    // Create the temporary file in the target directory.
-    std::string tmpl = (dir / (fpath.filename().string() + ".tmp.XXXXXX")).string();
-    std::vector<char> buf(tmpl.begin(), tmpl.end());
-    buf.push_back('\0');
-
-    int tfd = ::mkstemp(buf.data()); // Creates a unique temporary file.
-    if (tfd < 0) {
-        BMB_LOG(error) << "[bridge] mkstemp failed: " << std::strerror(errno) << "\n";
-        return false;
-    }
-
-    // Set permissions independently of umask.
-    if (::fchmod(tfd, 0600) != 0) {
-        BMB_LOG(error) << "[bridge] fchmod failed: " << std::strerror(errno) << "\n";
-        ::close(tfd);
-        ::unlink(buf.data());
-        return false;
-    }
-
-    // Write the complete payload.
-    const char* p = data.data();
-    ssize_t left = (ssize_t)data.size();
-    while (left > 0) {
-        ssize_t n = ::write(tfd, p, left);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            BMB_LOG(error) << "[bridge] write failed: " << std::strerror(errno) << "\n";
-            ::close(tfd);
-            ::unlink(buf.data());
-            return false;
-        }
-        left -= n; p += n;
-    }
-
-    // Flush file contents.
-    if (::fsync(tfd) != 0) {
-        BMB_LOG(error) << "[bridge] fsync(tmp) failed: " << std::strerror(errno) << "\n";
-        ::close(tfd);
-        ::unlink(buf.data());
-        return false;
-    }
-    ::close(tfd);
-
-    // Replace atomically within the same filesystem.
-    if (::rename(buf.data(), final_path.c_str()) != 0) {
-        BMB_LOG(error) << "[bridge] rename failed: " << std::strerror(errno)
-                  << " (errno=" << errno << ")\n";
-        ::unlink(buf.data());
-        return false;
-    }
-
-    // Flush the directory to persist the rename.
-    int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
-    if (dfd >= 0) {
-        (void)::fsync(dfd);
-        ::close(dfd);
-    }
-
-    return true;
-}
-
 static token_validation::Tokens fetch_and_store_tokens() {
 
     BMB_LOG(info) << "[bridge] refresh started\n";
 
     // load current refresh token (as in the script)
-    std::string cur_refresh = trim(read_file(REFRESH_TOKEN_FILE));
-    if (!token_validation::valid_token(cur_refresh)) {
-        BMB_LOG(error) << "[bridge] refresh: refresh_token.txt missing or invalid\n";
+    token_validation::Tokens current;
+    const auto token_directory = std::filesystem::path(ID_TOKEN_FILE).parent_path();
+    if (!token_store::load(token_directory, current)) {
+        BMB_LOG(error) << "[bridge] refresh: token state missing or invalid\n";
         return {};
     }
 
@@ -1121,7 +1038,7 @@ static token_validation::Tokens fetch_and_store_tokens() {
     const std::string url = "https://customer.bmwgroup.com/gcdm/oauth/token";
     const std::string body = build_form_body({
         {"grant_type",   "refresh_token"},
-        {"refresh_token",cur_refresh},
+        {"refresh_token",current.refresh},
         {"client_id",    BMB_BMW_CLIENT_ID}
     });
 
@@ -1178,20 +1095,12 @@ static token_validation::Tokens fetch_and_store_tokens() {
         return {};
     }
 
-    // Write tokens atomically in their target directory.
-    const std::string at_path = (std::filesystem::path(ID_TOKEN_FILE).parent_path() / "access_token.txt").string();
-    bool ok = true;
-    ok &= write_file_atomic(ID_TOKEN_FILE, tokens.id);
-    ok &= write_file_atomic(REFRESH_TOKEN_FILE, tokens.refresh);
-    ok &= write_file_atomic(at_path, tokens.access);
-
-    if (!ok) {
-        BMB_LOG(error) << "[bridge] writing tokens atomically failed\n";
+    if (!token_store::save(token_directory, tokens, write_file_atomic)) {
+        BMB_LOG(error) << "[bridge] saving token bundle failed\n";
         return {};
     }
 
-    BMB_LOG(info) << "✔ New Tokens saved:\n"
-              << "   id_token.txt, refresh_token.txt, access_token.txt\n";
+    BMB_LOG(info) << "✔ New token bundle saved\n";
     BMB_LOG(info) << "[bridge] token refreshed via HTTP, exp=" << tokens.expires
               << " (in " << (tokens.expires - time(nullptr)) << "s)\n";
 
