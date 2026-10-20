@@ -1,6 +1,7 @@
 """Compile actual widget expressions and exercise their production helpers."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import unittest
 
@@ -82,7 +83,18 @@ for (const definitions of data.helpers) {
 }
 assert.ok(tested >= 2);
 '''
-        result = subprocess.run(['node', '-e', script], input=json.dumps({
+        node = shutil.which('node')
+        if node:
+            command = [node, '-e', script]
+        else:
+            # No mounts or published ports; the container only receives test JSON.
+            command = ['docker', 'run', '--rm', '-i', '--network', 'none',
+                       '--read-only', '--cap-drop', 'ALL',
+                       '--security-opt', 'no-new-privileges:true',
+                       'node:24-alpine', 'node', '-e', script]
+        result = subprocess.run(command, input=json.dumps({
             'expressions': expressions, 'helpers': helpers,
-        }), capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        }), capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr + (
+            '\nWidget tests need local Node.js or a running Docker daemon '
+            'with access to the node:24-alpine image.' if not node else ''))

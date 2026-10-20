@@ -1052,7 +1052,8 @@ code 130 and a short interruption message instead of a Python traceback.
 
 ### Tool installation
 
-Use Python 3.12+, Git, Make and a C++ compiler. Node.js is required for widget regression tests; pnpm is not required. On
+Use Python 3.12+, Git, Make and a C++ compiler. Widget regression tests use local Node.js when available, otherwise a temporary
+Docker container; pnpm is not required. On
 macOS install Hadolint 2.15.1 on PATH first (for example through Homebrew), since
 that release has no macOS binary. The installer downloads native tools with
 pinned versions and verified SHA-256 checksums into the ignored `.lint-tools`
@@ -1155,9 +1156,11 @@ Run both checks before building and starting a local development container:
 
 `tests/test-check.sh` runs all tests under `tests/` from any working directory. It uses
 the project-local `.lint-venv` Python when available, otherwise system Python.
-Requirements are Python 3.9+, PyYAML, Node.js 22+, Bash, Git, jq, OpenSSL, a C++17 compiler available as `c++`, and
-Docker CLI with the Compose plugin. No running Docker daemon, BMW account,
-production tokens or MQTT broker is required. Missing dependencies, skipped
+Requirements are Python 3.9+, PyYAML, Bash, Git, jq, OpenSSL, a C++17 compiler available as `c++`, and
+Docker CLI with the Compose plugin. Without local Node.js, widget tests require a running Docker daemon and the
+`node:24-alpine` image (downloaded automatically on first use). With local Node.js,
+no running Docker daemon is required. No BMW account, production tokens or MQTT
+broker is required. Missing dependencies, skipped
 tests, an empty suite or failed tests return a non-zero exit code.
 
 The separate CI job **Offline regression tests** invokes exactly
