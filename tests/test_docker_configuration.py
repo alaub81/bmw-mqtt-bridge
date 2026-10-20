@@ -142,6 +142,9 @@ class DockerConfigurationTests(unittest.TestCase):
         for compose_file in ('docker-compose.example.yml', 'docker-compose.dev.yml'):
             with self.subTest(compose_file=compose_file):
                 service = self.compose_service(compose_file, BMB_BMW_TOKEN_DIR='/some/host/path')
+                self.assertTrue(service['read_only'])
+                self.assertEqual(service['cap_drop'], ['ALL'])
+                self.assertIn('no-new-privileges:true', service['security_opt'])
                 configured = service['environment']
                 self.assertEqual(example_keys - {'BMB_VERSION'}, configured.keys())
                 self.assertNotIn('BMB_VERSION', configured)

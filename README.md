@@ -196,6 +196,38 @@ published. For a private package, run `docker login ghcr.io` using a GitHub
 personal access token (classic) with `read:packages` and access to the package;
 see [GitHub's container registry authentication documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
 
+### Non-root runtime and existing token volumes
+
+Both images run as UID/GID `10001:10001`. The full Compose configuration also
+uses a read-only root filesystem, drops all Linux capabilities and enables
+`no-new-privileges`. Only the token volume and the RAM-backed `/tmp` are writable.
+The development configuration inherits these settings. Fresh named volumes receive
+the image directory's ownership automatically.
+
+Before updating an existing deployment with root-owned tokens, back up the token
+volume, stop the bridge and migrate ownership once using the new image:
+
+```bash
+docker compose stop bmw-mqtt-bridge
+docker compose pull bmw-mqtt-bridge
+docker compose run --rm --no-deps --user 0:0 \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint /bin/sh \
+  bmw-mqtt-bridge -ec 'chown -R 10001:10001 /app/token'
+docker compose up -d bmw-mqtt-bridge
+```
+
+For local development use `-f docker-compose.dev.yml` on every command and build
+instead of pulling. Bind-mounted or custom token directories need the same
+ownership at their actual mount path. Authentication uses the same unprivileged
+user and writable token volume. No automatic root bootstrap runs on startup.
+
+Verify the image with a disposable volume (no deployment tokens are used):
+
+```bash
+docker build -t bmw-mqtt-bridge:hardening-test .
+./tests/container-hardening-check.sh
+```
+
 ### Connecting to the Docker host
 
 Set `BMB_MQTT_LOCAL_HOST` to an IP address or DNS name reachable from the
@@ -1020,7 +1052,7 @@ code 130 and a short interruption message instead of a Python traceback.
 
 ### Tool installation
 
-Use Python 3.12+, Git, Make and a C++ compiler. Node.js and pnpm are not required. On
+Use Python 3.12+, Git, Make and a C++ compiler. Node.js is required for widget regression tests; pnpm is not required. On
 macOS install Hadolint 2.15.1 on PATH first (for example through Homebrew), since
 that release has no macOS binary. The installer downloads native tools with
 pinned versions and verified SHA-256 checksums into the ignored `.lint-tools`
@@ -1123,7 +1155,7 @@ Run both checks before building and starting a local development container:
 
 `tests/test-check.sh` runs all tests under `tests/` from any working directory. It uses
 the project-local `.lint-venv` Python when available, otherwise system Python.
-Requirements are Python 3.9+, Bash, Git, jq, OpenSSL, a C++17 compiler available as `c++`, and
+Requirements are Python 3.9+, PyYAML, Node.js 22+, Bash, Git, jq, OpenSSL, a C++17 compiler available as `c++`, and
 Docker CLI with the Compose plugin. No running Docker daemon, BMW account,
 production tokens or MQTT broker is required. Missing dependencies, skipped
 tests, an empty suite or failed tests return a non-zero exit code.
@@ -1140,6 +1172,26 @@ Compose healthcheck logic, and lint file selection/error handling. They use
 temporary directories and compiled extracts of the production C++ code with
 simulated MQTT functions. They are offline regression tests, not an end-to-end
 test of a running container connected to BMW and an actual MQTT broker.
+
+### Real MQTT integration tests
+
+The separate test image starts Mosquitto on its own loopback interface, exercises
+the production Homie publisher with real libmosquitto and removes the broker on
+exit. No host ports, BMW credentials or existing MQTT services are used.
+
+```bash
+docker build -f tests/Dockerfile.integration -t bmb-mqtt-integration:test .
+docker run --rm --network none bmb-mqtt-integration:test
+```
+
+CI runs these tests separately from the offline suite. They cover discovery,
+retained values, delta suppression, broker restart/replay, crash Last Will and
+acknowledged shutdown. The offline suite additionally executes widget expressions
+from the actual YAML using Node.js, including opening states, missing Items and
+unit conversions. Storage fault injection covers EROFS, ENOSPC, EINTR, failed
+flushes and failed renames, checking preservation of old data and temporary-file
+cleanup. Repeated bursts exercise queue overflow, checkpointing and final state
+across two simulated hours; this is not a multi-day soak or a BMW HTTP integration.
 
 ## Security
 

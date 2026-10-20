@@ -27,6 +27,9 @@ RUN apk add --no-cache \
     jq \
     openssl
 
+RUN addgroup -g 10001 bmb && adduser -D -H -u 10001 -G bmb bmb \
+    && mkdir -p /app/token && chown 10001:10001 /app/token
+
 WORKDIR /app
 COPY --chmod=0755 --from=builder /build/src/bmw_mqtt_bridge /app/bmw_mqtt_bridge
 COPY --chmod=0755 ./resources/bmw_flow.sh .
@@ -38,6 +41,7 @@ ENV BMB_BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMB_MQTT_LOCAL_PORT=1883 \
     BMB_MQTT_LOCAL_PREFIX=bmw/
 
+USER 10001:10001
 VOLUME ["/app/token"]
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/bmw_mqtt_bridge"]

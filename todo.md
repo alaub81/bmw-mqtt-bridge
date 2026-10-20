@@ -31,12 +31,15 @@ Compose `tmpfs` mount are implemented. Track remaining work and completed follow
   independently compilable components; reduce Homie's dependency on bridge globals.
 - [x] Correct the remaining openHAB documentation and widget descriptions from
   `telemetry#last-update` to `telemetry#lastUpdate`; check examples against current behavior.
-- [ ] Add integration tests with a real local MQTT broker for delta updates,
+- [x] Add integration tests with a real local MQTT broker for delta updates,
   discovery, reconnect replay, retained state, Last Will and shutdown acknowledgements.
-- [ ] Add failure/load tests for full or read-only storage, interrupted persistence,
-  slow HTTP requests, message bursts and sustained operation.
-- [ ] Add automated checks for openHAB widget expressions, state mappings, unit
+- [ ] Complete failure/load coverage for token-set restart recovery, real slow HTTP
+  requests and multi-day sustained operation. Implemented: storage EROFS/ENOSPC,
+  interrupted writes, process exit before commit, flush/rename failure cleanup,
+  blocked background work and
+  repeated bursts with checkpointing and delta suppression.
+- [x] Add automated checks for openHAB widget expressions, state mappings, unit
   conversion and missing/invalid Item values, alongside YAML validation.
-- [ ] Run the container without root, use a read-only root filesystem, drop
+- [x] Run the container without root, use a read-only root filesystem, drop
   unnecessary capabilities and enable `no-new-privileges`. Verify authentication,
   token-volume ownership, `tmpfs` access and existing-volume migration first.

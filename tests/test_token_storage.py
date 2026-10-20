@@ -156,8 +156,29 @@ exec "$TEST_REAL_JQ" "$@"
 #include <vector>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
-''' + helper + r'''
+'''+ r'''
+static int fault = 0;
+static int checked_mkstemp(char* path) {
+    if (fault == 1) { errno = EROFS; return -1; }
+    return ::mkstemp(path);
+}
+static ssize_t checked_write(int fd, const void* data, size_t size) {
+    if (fault == 2) { errno = ENOSPC; return -1; }
+    if (fault == 3) { fault = 0; errno = EINTR; return -1; }
+    return ::write(fd, data, size);
+}
+static int checked_fsync(int fd) {
+    if (fault == 4) { errno = EIO; return -1; }
+    return ::fsync(fd);
+}
+static int checked_rename(const char* from, const char* to) {
+    if (fault == 5) { errno = EACCES; return -1; }
+    if (fault == 6) _exit(75); // Process dies after flush, before commit.
+    return ::rename(from, to);
+}
+''' + helper.replace('::mkstemp(', 'checked_mkstemp(').replace('::write(', 'checked_write(').replace('::fsync(', 'checked_fsync(').replace('::rename(', 'checked_rename(') + r'''
 int main(int argc, char** argv) {
     umask(0000); // The writer must protect tokens independently of the caller.
     const std::string path = argv[1];
@@ -172,6 +193,33 @@ int main(int argc, char** argv) {
     std::string content;
     { std::ifstream input(path); input >> content; }
     assert(content == "rotated-token");
+    for (int failure : {1, 2, 4, 5}) {
+        fault = failure;
+        assert(!write_file_atomic(path, "must-not-replace"));
+        { std::ifstream input(path); input >> content; }
+        assert(content == "rotated-token");
+        for (auto& entry : std::filesystem::directory_iterator(std::filesystem::path(path).parent_path()))
+            assert(entry.path().filename().string().find(".tmp.") == std::string::npos);
+    }
+    fault = 6;
+    const pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) { write_file_atomic(path, "interrupted-commit"); _exit(76); }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 75);
+    { std::ifstream input(path); input >> content; }
+    assert(content == "rotated-token");
+    // A crash may leave staging files, but a later writer must still commit safely.
+    fault = 0;
+    assert(write_file_atomic(path, "rotated-token"));
+    for (auto& entry : std::filesystem::directory_iterator(std::filesystem::path(path).parent_path()))
+        if (entry.path().filename().string().find(".tmp.") != std::string::npos)
+            std::filesystem::remove(entry.path());
+    fault = 3; // Interrupted writes are retried rather than losing the new token.
+    assert(write_file_atomic(path, "after-interruption"));
+    { std::ifstream input(path); input >> content; }
+    assert(content == "after-interruption");
+    fault = 0;
     const auto blocked = std::filesystem::path(path).parent_path() / "blocked";
     std::filesystem::create_directory(blocked);
     { std::ofstream output(blocked / "sentinel"); output << "keep-me"; }

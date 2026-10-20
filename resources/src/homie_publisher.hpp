@@ -165,8 +165,10 @@ class HomiePublisher {
     static void stop_client(Device& d, bool clean = false) {
         if (!d.client) return;
         // Without a confirmed offline publication, let the broker deliver lost.
-        if (clean) mosquitto_disconnect(d.client);
-        mosquitto_loop_stop(d.client, true);
+        const bool disconnect_queued = clean && mosquitto_disconnect(d.client) == MOSQ_ERR_SUCCESS;
+        // DISCONNECT is asynchronous. Let the network loop send it before joining;
+        // forcing the thread to stop can trigger a Will after the offline PUBACK.
+        mosquitto_loop_stop(d.client, !disconnect_queued);
         mosquitto_destroy(d.client);
         d.client = nullptr;
         d.connected = false;

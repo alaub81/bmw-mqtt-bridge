@@ -37,6 +37,7 @@ struct mosquitto {
     void (*disconnect_cb)(mosquitto*, void*, int) = nullptr;
     void (*publish_cb)(mosquitto*, void*, int) = nullptr;
     std::thread ack;
+    bool disconnect_requested = false;
 };
 static std::vector<mosquitto*> clients;
 static std::vector<std::pair<std::string, std::string>> messages, wills;
@@ -79,9 +80,9 @@ int mosquitto_connect_async(mosquitto*, const char* host, int port, int keepaliv
 int mosquitto_loop_start(mosquitto* c) {
     if (connect_now) c->connect_cb(c, c->context, 0); return 0;
 }
-int mosquitto_disconnect(mosquitto* c) { c->disconnect_cb(c, c->context, 0); return 0; }
+int mosquitto_disconnect(mosquitto* c) { c->disconnect_requested = true; c->disconnect_cb(c, c->context, 0); return 0; }
 int mosquitto_loop_stop(mosquitto* c, bool force) {
-    assert(force);
+    assert(force != c->disconnect_requested);
     if (c->ack.joinable()) c->ack.join(); return 0;
 }
 void mosquitto_destroy(mosquitto* c) {
@@ -223,6 +224,24 @@ int main(int argc, char** argv) {
         std::ifstream input(cache); input >> persisted;
         assert(persisted.at("vehicles").at(vin).size() == 2);
         assert(persisted.at("last_updates").at(vin) == "2026-10-04T12:16:49.000Z");
+    } else if (scenario == "sustained-load") {
+        const auto start = std::chrono::steady_clock::now();
+        for (int burst = 0; burst < 24; ++burst) {
+            for (int i = 0; i < 2048; ++i)
+                publisher.ingest(vin, {{"vehicle.load.counter", {{"value", burst * 2048 + i}}}});
+            tick_and_wait(publisher, true, start + std::chrono::seconds(burst * 300));
+            assert(latest(base + "telemetry/loadCounter") == std::to_string(burst * 2048 + 2047));
+            // Repeated identical values must remain silent between bursts.
+            messages.clear();
+            publisher.ingest(vin, {{"vehicle.load.counter", {{"value", burst * 2048 + 2047}}}});
+            tick_and_wait(publisher, true, start + std::chrono::seconds(burst * 300 + 1));
+            assert(latest(base + "telemetry/loadCounter") == "<missing>");
+            messages.clear();
+        }
+        publisher.shutdown();
+        json saved; std::ifstream input(cache); input >> saved;
+        assert(saved.at("vehicles").at(vin).at("vehicle.load.counter").at("value") == "49151");
+        assert(latest(base + "$state") == "disconnected");
     } else if (scenario == "queue-concurrent") {
         std::atomic<bool> finished{false};
         std::thread producer([&] {
@@ -533,7 +552,7 @@ int main(int argc, char** argv) {
 
     def run_scenario(self, name, cache):
         result = subprocess.run([str(self.binary), name, str(cache)],
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=60 if name == 'sustained-load' else 15)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
@@ -551,6 +570,9 @@ int main(int argc, char** argv) {
     def test_pending_queue_overflow_invalid_inputs_and_receipt_time(self):
         result = self.run_scenario('queue-limit', self.base / 'queue-limit.json')
         self.assertIn('dropped oldest update; total_dropped=1 limit=2', result.stderr)
+
+    def test_sustained_bursts_checkpoint_and_delta_suppression(self):
+        self.run_scenario('sustained-load', self.base / 'load.json')
 
     def test_pending_queue_concurrent_ingest_and_drain(self):
         self.run_scenario('queue-concurrent', self.base / 'queue-concurrent.json')

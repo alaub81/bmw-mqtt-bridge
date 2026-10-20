@@ -1,0 +1,7 @@
+FROM alpine:3.24
+RUN apk add --no-cache g++ mosquitto-dev mosquitto mosquitto-clients python3
+WORKDIR /test
+COPY resources/src /test/src
+COPY tests/mqtt_harness.cpp tests/integration_mqtt.py /test/
+RUN g++ -std=c++17 -pthread -I /test/src mqtt_harness.cpp -lmosquitto -o /test/harness
+CMD ["python3", "/test/integration_mqtt.py"]
