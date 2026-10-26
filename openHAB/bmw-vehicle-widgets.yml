@@ -2,7 +2,11 @@
 version: 1
 widgets:
   bmw_vehicle_comfort_list:
-    tags: []
+    tags:
+      - list-item
+      - bmw
+      - vehicle
+      - comfort
     props:
       parameterGroups:
         - name: vehicle
@@ -1135,7 +1139,11 @@ widgets:
                                                     var(--f7-text-color))'''
                                                 title: =loop.door.label || loop.door.name.replace(/_/g, ' ')
   bmw_vehicle_comfort_card:
-    tags: []
+    tags:
+      - card
+      - bmw
+      - vehicle
+      - comfort
     props:
       parameterGroups:
         - name: vehicle

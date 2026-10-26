@@ -5,6 +5,9 @@ Die Datei `bmw-vehicle-widgets.yml` enthält beide wiederverwendbaren
 `bmw_vehicle_comfort_card` für eigene Fahrzeugkarten. Es gibt keine Beispielseite
 und keinen Demo-Modus mehr.
 
+Beide Widgets tragen die Tags `bmw`, `vehicle` und `comfort`. Das Listenwidget
+ist zusätzlich mit `list-item`, die Fahrzeugkarte mit `card` gekennzeichnet.
+
 ## Installation
 
 Die Datei nach `$OPENHAB_CONF/yaml/bmw-vehicle-widgets.yml` kopieren und
