@@ -16,3 +16,5 @@ site/
 .ruff_cache/
 **/tokens.json
 **/tokens.json.tmp.*
+**/__pycache__/
+**/*.pyc
