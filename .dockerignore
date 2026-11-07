@@ -18,3 +18,11 @@ site/
 **/tokens.json.tmp.*
 **/__pycache__/
 **/*.pyc
+
+# Local instructions, private notes and generated measurements
+AGENTS.md
+**/AGENTS.md
+private/
+**/private/
+backups/
+tests/results/
