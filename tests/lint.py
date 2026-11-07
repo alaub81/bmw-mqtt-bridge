@@ -27,8 +27,16 @@ def project_files():
 def check_text(files):
     failures = []
     for name in files:
+        data = (ROOT / name).read_bytes()
+        # Document images are binary; validate their signature instead of UTF-8.
+        suffix = Path(name).suffix.lower()
+        if suffix in (".png", ".jpg", ".jpeg"):
+            valid = data.startswith(b"\x89PNG\r\n\x1a\n") if suffix == ".png" else data.startswith(b"\xff\xd8\xff")
+            if not valid:
+                failures.append(f"{name}: invalid image signature")
+            continue
         try:
-            text = (ROOT / name).read_bytes().decode("utf-8")
+            text = data.decode("utf-8")
         except UnicodeError:
             failures.append(f"{name}: not valid UTF-8")
             continue
@@ -139,7 +147,7 @@ def main():
     check("Markdown", [p for p in files if p.endswith(".md")],
           command=["pymarkdown", "--config", ".pymarkdown.yaml", "--strict-config", "scan"])
     print("\n================ Summary ================", flush=True)
-    print(f"All {len(files)} project files received the text hygiene check.", flush=True)
+    print(f"All {len(files)} project files received text hygiene or image signature checks.", flush=True)
     print("Vendor json.hpp receives text checks and is parsed as a C++ include; upstream style is preserved.", flush=True)
     for label, passed in results:
         print(f"{'PASS' if passed else 'FAIL'}  {label}", flush=True)

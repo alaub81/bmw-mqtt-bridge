@@ -52,6 +52,18 @@ class LintRunnerTests(unittest.TestCase):
             with patch.object(LINT, "ROOT", root):
                 self.assertTrue(LINT.check_text(["valid.py"]))
 
+    def test_images_require_matching_signatures_and_unknown_binary_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            (root / "image.jpg").write_bytes(b"\xff\xd8\xff")
+            (root / "fake.png").write_bytes(b"not an image\n")
+            (root / "unknown.bin").write_bytes(b"\xff")
+            with patch.object(LINT, "ROOT", root), contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(LINT.check_text(["image.png", "image.jpg"]))
+                self.assertFalse(LINT.check_text(["fake.png"]))
+                self.assertFalse(LINT.check_text(["unknown.bin"]))
+
     def test_json_duplicate_keys_and_dotenv_duplicate_assignments_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
