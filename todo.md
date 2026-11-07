@@ -1,9 +1,9 @@
-# TODO
+# Publication follow-up
 
-No open tasks.
+See [publication check](docs/publication-check.md#remaining-before-publication)
+for remaining live acceptance checks and publishing steps.
 
 ## Scope decisions
 
-- Keep the current bridge structure; splitting it into independently compiled
-  components is not planned for this small project.
-- Further performance benchmarks, instrumentation and profiling are not planned.
+Keep the current bridge structure. Further performance instrumentation and
+profiling are not planned; the existing read-only collector remains available.
