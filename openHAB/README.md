@@ -2,8 +2,7 @@
 
 Die Datei `bmw-vehicle-widgets.yml` enthält beide wiederverwendbaren
 **Komfort**-Widgets: `bmw_vehicle_comfort_list` für Listen und
-`bmw_vehicle_comfort_card` für eigene Fahrzeugkarten. Es gibt keine Beispielseite
-und keinen Demo-Modus mehr.
+`bmw_vehicle_comfort_card` für eigene Fahrzeugkarten. Die Widgets sind reine Anzeigen; Items werden vom Anwender zugeordnet.
 
 Beide Widgets tragen die Tags `bmw`, `vehicle` und `comfort`. Das Listenwidget
 ist zusätzlich mit `list-item`, die Fahrzeugkarte mit `card` gekennzeichnet.
@@ -32,6 +31,51 @@ gepflegt. Bei der Umstellung eine vorhandene `vehicle-comfort-file-config.yml`
 auf dem openHAB-Server durch `bmw-vehicle-widgets.yml` ersetzen; nicht beide
 Dateien gleichzeitig behalten. Die Widget-UIDs bleiben unverändert, bestehende
 Zuordnungen und Instanzen können weiterverwendet werden.
+
+## Einzelimport in MainUI
+
+Alternativ zur Dateiinstallation unter **Entwicklerwerkzeuge → Widgets → +**
+ein Widget anlegen, den YAML-Code vollständig durch den jeweiligen Import ersetzen
+und speichern. Beide Installationswege sind Alternativen: dieselbe UID nicht
+zusätzlich zur Dateiinstallation in MainUI anlegen.
+
+### Listenwidget
+
+[Import bmw_vehicle_comfort_list](imports/bmw_vehicle_comfort_list.yaml) enthält
+nur das Listenwidget inklusive UID. Nach dem Speichern bei der Fahrzeuggruppe
+unter **Default List Widget** auswählen. Mindestens `vehicleName`, `driveType`
+und ein Messwert-Item setzen. Es eignet sich für semantische Listen; die
+Point-Items müssen bei Bedarf separat aus der automatischen Ansicht genommen werden.
+
+### Fahrzeugkarte
+
+[Import bmw_vehicle_comfort_card](imports/bmw_vehicle_comfort_card.yaml) enthält
+nur die Karte inklusive UID. Als **Default Standalone Widget** der Fahrzeuggruppe
+oder als Widgetinstanz auf einer Layout-Seite verwenden. Fahrzeugname, Antrieb
+und die anzuzeigenden Items auswählen; Details öffnen sich durch Antippen.
+
+### Vom Broker zum Widget
+
+1. MQTT Binding und Homie-Unterstützung passend zur openHAB-Version installieren;
+   eine MQTT Broker Bridge mit dem lokalen Broker verbinden.
+2. `BMB_MQTT_HOMIE=1` setzen und den Bridge-Container neu erstellen.
+3. Nach einer gültigen BMW-Nachricht das Fahrzeug aus der Inbox übernehmen.
+4. Gewünschte Channels mit Items verknüpfen. `telemetry#lastUpdate` benötigt ein
+   DateTime-Item mit Standardprofil. Messwerte in den unten angegebenen Einheiten bereitstellen.
+5. Widget installieren und diese Items in der Instanz auswählen. Nicht verknüpfte
+   Parameter auslassen; ein unbekannter Wert ist kein bestätigtes „geschlossen“.
+
+### Kanonische Quelle und Generierung
+
+Nur `bmw-vehicle-widgets.yml` bearbeiten. Einzelimporte sind abgeleitet:
+
+```bash
+.lint-venv/bin/python openHAB/generate_imports.py
+.lint-venv/bin/python openHAB/generate_imports.py --check
+```
+
+Python und PyYAML aus den Testvoraussetzungen reichen aus. Der Generator führt
+keine Aktionen auf einem openHAB-Server aus.
 
 ## Sichtbarkeit
 
@@ -285,3 +329,13 @@ unlockedState: [UNLOCKED, UNSECURED]
 
 Damit unterstützen alle Zustandszuordnungen mehrere Werte: Verriegelung,
 Ladestatus, Ladekabel sowie Fenster, Türen und Kofferraum.
+
+## Demoansichten
+
+Die folgenden Screenshots stammen aus einer getrennten openHAB-5.2.3-Instanz.
+Alle Werte und Itemnamen sind erfunden; sie belegen die Anzeige, keine Verbindung
+zu BMW. Die temporäre Seite und Testinstanz wurden anschließend entfernt.
+
+![Fahrzeugkarte und Listenwidget mit fiktiven Werten](../docs/images/openhab-demo.jpg)
+
+![Aufgeklappte Fenster- und Türdetails](../docs/images/openhab-demo-details.jpg)

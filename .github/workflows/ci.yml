@@ -150,6 +150,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends g++ jq openssl nodejs
           python -m pip install PyYAML==6.0.3
+      - name: Verify generated MainUI imports
+        run: python openHAB/generate_imports.py --check
       - name: Run pre-deployment tests
         if: matrix.mode == 'standard'
         run: ./tests/test-check.sh
