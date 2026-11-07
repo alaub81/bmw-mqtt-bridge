@@ -1,0 +1,203 @@
+BMW-Fahrzeugdaten im eigenen Smart Home anzeigen: Die BMW MQTT Bridge leitet den CarData-Datenstrom an deinen MQTT-Broker weiter. Hier zeige ich dir die Einrichtung mit Docker Compose, die Anmeldung bei BMW und die Einbindung in openHAB – einschließlich Updates, Backup und Fehlersuche.
+
+== Was macht die BMW MQTT Bridge? ==
+Die Bridge verbindet den BMW-CarData-Streamingdienst mit deinem eigenen MQTT-Broker. Die Anmeldung erfolgt über den OAuth Device Flow: Du bestätigst den Zugang im Browser, die Bridge speichert die erhaltenen Tokens in einem Docker-Volume und erneuert sie im laufenden Betrieb automatisch.
+
+Du kannst vollständige JSON-Nachrichten weiterreichen, einzelne Felder auf eigene Topics aufteilen und zusätzlich Homie 4 für die openHAB-Erkennung aktivieren. Welche Fahrzeugdaten eintreffen und wie häufig BMW sie aktualisiert, hängt vom Fahrzeug und der freigegebenen Datenauswahl ab. Die Bridge ist kein frei einstellbares Abfragesystem. Die Widgets zeigen Daten an und senden keine Fahrzeugbefehle.
+
+Das Projekt ist eine unabhängige Community-Bridge und basiert auf der Arbeit von dj0abr.
+
+== Voraussetzungen ==
+* Docker mit Compose-Plugin, beispielsweise auf einem Linux-Server, NAS oder Raspberry Pi mit 64-Bit-System.
+* Ein erreichbarer MQTT-Broker, zum Beispiel Mosquitto. Die Bridge installiert keinen Broker.
+* Ein BMW-Konto mit zugeordnetem Fahrzeug und nutzbarem CarData-Streamingzugang.
+* Für die optionale Anzeige: openHAB mit MQTT Binding und Homie-Unterstützung passend zur installierten Version.
+
+Die Container werden für amd64 und arm64 gebaut. Ein Port muss für die Bridge nicht veröffentlicht werden: Sie baut ausgehende Verbindungen zu BMW und deinem Broker auf.
+
+== BMW CarData vorbereiten ==
+Öffne das [https://www.bmw-connecteddrive.com/ BMW-Portal] und suche beim Fahrzeug nach CarData. Die genaue Menübezeichnung kann sich ändern.
+
+# Erstelle eine Client-ID für den CarData-Zugang. Die Funktion „Authenticate Vehicle“ ist dafür nicht der hier beschriebene Weg.
+# Übernimm die Client-ID als <code>BMB_BMW_CLIENT_ID</code>.
+# Öffne bei CarData Stream die Verbindungsdetails. Den dortigen Benutzernamen trägst du als <code>BMB_BMW_GCID</code> ein.
+# Aktiviere in der Datenauswahl die gewünschten Fahrzeugdaten.
+
+== Docker-Schnellstart ==
+Lege ein eigenes Verzeichnis an:
+<syntaxhighlight lang="bash">
+mkdir -p ~/bmw-mqtt-bridge
+cd ~/bmw-mqtt-bridge
+</syntaxhighlight>
+
+Erstelle darin die Datei <code>docker-compose.yml</code>:
+<syntaxhighlight lang="yaml">
+services:
+  bmw-mqtt-bridge:
+    image: ghcr.io/alaub81/bmw-mqtt-bridge:${BMB_VERSION:-latest}
+    env_file: .env
+    volumes:
+      - data_bmb_token:/app/token
+    restart: unless-stopped
+
+volumes:
+  data_bmb_token:
+</syntaxhighlight>
+
+Daneben kommt eine <code>.env</code>:
+<syntaxhighlight lang="ini">
+BMB_BMW_CLIENT_ID=DEINE-CLIENT-ID
+BMB_BMW_GCID=DEIN-CARDATA-BENUTZERNAME
+BMB_MQTT_LOCAL_HOST=192.168.1.10
+</syntaxhighlight>
+
+Ersetze die Beispielwerte. Dieses Minimalbeispiel verwendet Port 1883 ohne TLS und ohne Broker-Anmeldung. Benötigt dein Broker Zugangsdaten, ergänze:
+<syntaxhighlight lang="ini">
+BMB_MQTT_LOCAL_USER=DEIN-MQTT-BENUTZER
+BMB_MQTT_LOCAL_PASSWORD='DEIN-MQTT-PASSWORT'
+</syntaxhighlight>
+
+Bei Sonderzeichen im Passwort die Compose-Regeln für <code>.env</code> beachten; einfache Anführungszeichen erhalten beispielsweise ein Dollarzeichen als Literal. Verwende auf nicht vertrauenswürdigen Netzen TLS mit Zertifikatsprüfung. Für einen Broker mit öffentlich vertrauenswürdigem Zertifikat beispielsweise:
+<syntaxhighlight lang="ini">
+BMB_MQTT_LOCAL_HOST=mqtt.example.org
+BMB_MQTT_LOCAL_PORT=8883
+BMB_MQTT_LOCAL_TLS=true
+BMB_MQTT_LOCAL_TLS_VERIFY=true
+</syntaxhighlight>
+
+Für eine eigene CA beschreibt die Repository-Dokumentation den zusätzlichen Zertifikatsmount. Der Brokername muss zum Zertifikat passen. <code>localhost</code> bezeichnet im Container den Container selbst. Verwende die erreichbare LAN-Adresse oder den Dienstnamen des Brokers im gemeinsamen Docker-Netz.
+
+Die beiden Dateien reichen für den Einstieg. Zusätzliche Konfigurationsdateien im Container sind nicht erforderlich. Das ausführliche Compose-Beispiel im Repository ergänzt Healthcheck, begrenzte Logs und weitere Härtung.
+
+== Einmal anmelden und starten ==
+<syntaxhighlight lang="bash">
+chmod 600 .env
+docker compose pull
+docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh
+docker compose up -d
+docker compose logs -f bmw-mqtt-bridge
+</syntaxhighlight>
+
+Öffne den vom Helfer ausgegebenen Link und bestätige den angezeigten Gerätecode bei BMW. Die Tokens landen im Volume unter <code>/app/token/tokens.json</code>. Bei späteren Starts bleibt die Anmeldung erhalten, solange die Zugangsdaten gültig sind. Zum Beenden der Logansicht drückst du Strg+C; der Container läuft weiter.
+
+Betreibe nur eine Bridge pro BMW-Zugang beziehungsweise gemeinsamem Tokenbestand. Für eine erneute Anmeldung zuerst den laufenden Dienst stoppen:
+<syntaxhighlight lang="bash">
+docker compose stop bmw-mqtt-bridge
+docker compose run --rm -it bmw-mqtt-bridge ./bmw_flow.sh
+docker compose up -d
+</syntaxhighlight>
+
+== Welche MQTT-Ausgaben gibt es? ==
+Standardmäßig veröffentlicht die Bridge vollständige Nachrichten unter <code>bmw/raw/&lt;VIN&gt;/&lt;eventName&gt;</code> sowie auf dem Legacy-Pfad <code>bmw/&lt;VIN&gt;/&lt;eventName&gt;</code>. Optional lassen sich einzelne Felder aufteilen:
+<syntaxhighlight lang="ini">
+BMB_MQTT_SPLIT_TOPICS=1
+</syntaxhighlight>
+
+Diese erscheinen unter <code>bmw/vehicles/&lt;VIN&gt;/&lt;property&gt;</code>. Die tatsächlichen Feldnamen ergeben sich aus den empfangenen BMW-Nachrichten. <code>bmw/status</code> beschreibt den Verbindungszustand, wenn RAW- oder Split-Ausgabe aktiv ist. Es ist kein Nachweis für aktuelle Werte aller Fahrzeugfelder.
+
+Mit <code>BMB_MQTT_RETAIN=1</code> bleiben die letzten RAW-/Split-Werte auf dem Broker erhalten. Status sowie Homie-Metadaten und Homie-Werte werden unabhängig davon retained veröffentlicht. Ein alter gespeicherter Wert ist keine neue Messung.
+
+Nach Änderungen an der <code>.env</code> den Container neu erstellen:
+<syntaxhighlight lang="bash">
+docker compose up -d --force-recreate
+</syntaxhighlight>
+
+== openHAB über Homie anbinden ==
+Ergänze in der <code>.env</code>:
+<syntaxhighlight lang="ini">
+BMB_MQTT_HOMIE=1
+</syntaxhighlight>
+
+# Erstelle den Bridge-Container neu.
+# Verbinde in openHAB eine MQTT Broker Bridge mit deinem lokalen Broker und aktiviere die Homie-Unterstützung deiner Version.
+# Warte auf eine gültige Fahrzeugnachricht. Übernimm das erkannte Fahrzeug aus der Inbox.
+# Verknüpfe die gewünschten Channels mit Items.
+# Verknüpfe <code>telemetry#lastUpdate</code> mit einem DateTime-Item und Standardprofil.
+
+Die Bridge veröffentlicht Homie unter <code>homie/bmw-&lt;VIN in Kleinbuchstaben&gt;/</code>. Ein eigener <code>.things</code>-Import oder JSONPath ist für diesen Weg nicht nötig. Broker-ACLs müssen auch diese Topics und das Last Will erlauben.
+
+„Last update“ ist die Empfangszeit der letzten gültigen Nachricht in der Bridge. Eine Teilnachricht kann nur einzelne Felder aktualisieren; die anderen Werte können älter sein. Auch wiederhergestellte Cachewerte müssen nicht frisch sein.
+
+=== Fahrzeugkarte oder Listenwidget ===
+Im [https://github.com/alaub81/bmw-mqtt-bridge/tree/main/openHAB openHAB-Verzeichnis] liegen die kanonische Widgetdatei und daraus erzeugte Einzelimporte.
+
+* '''Dateiinstallation:''' <code>bmw-vehicle-widgets.yml</code> nach <code>$OPENHAB_CONF/yaml/</code> kopieren und MainUI neu laden.
+* '''Einzelimport:''' In MainUI unter Entwicklerwerkzeuge → Widgets ein Widget anlegen und den YAML-Code vollständig durch den gewünschten Import aus <code>openHAB/imports/</code> ersetzen.
+
+Verwende je UID einen Installationsweg. Die Fahrzeugkarte lässt sich auf einer Layout-Seite einsetzen; das Listenwidget eignet sich als Default List Widget einer Fahrzeuggruppe. Wähle Fahrzeugname, Antrieb und die vorhandenen Items in der Instanz aus. Nicht benötigte Parameter bleiben leer.
+
+Die Widgets unterstützen unter anderem Reichweite, Akku oder Tank, Verriegelung, Ladeinformationen und ausgewählte Fenster-/Türzustände. Nicht eingerichtete Messwerte werden ausgeblendet; unbekannte Zustände bleiben unbekannt. Reifendruck und Wallboxleistung haben dokumentierte Einheitenumrechnungen. Die Wallboxleistung stammt aus einem separat gewählten Leistungs-Item deines Strommessers und wird nicht von der Bridge erzeugt.
+
+== Update ==
+Sichere zuerst Konfiguration und Token-Volume. Für eine gezielte Version setze <code>BMB_VERSION</code> in der <code>.env</code> auf einen tatsächlich veröffentlichten Image-Tag ohne führendes <code>v</code>. Danach:
+<syntaxhighlight lang="bash">
+docker compose pull
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 bmw-mqtt-bridge
+</syntaxhighlight>
+
+Auch <code>latest</code> aktualisiert einen laufenden Container nicht von selbst. Versionstags können durch regelmäßige Basisimage-Neubauten ersetzt werden; notiere für einen exakten Rollback den Image-Digest. Bei Formatmigrationen gehört der passende Zustandsstand zum Rollback.
+
+== Backup und Restore ==
+Das Volume enthält Tokens und bei Homie-Nutzung den Cache. Ein Backup des Images allein reicht nicht. Sichere zusätzlich <code>.env</code>, Compose und eigene Zertifikate. Die Archive enthalten Zugangsdaten und gehören auf einen geschützten zweiten Speicherort.
+
+Im Compose-Verzeichnis:
+<syntaxhighlight lang="bash">
+umask 077
+mkdir -p backups
+docker compose stop bmw-mqtt-bridge
+docker compose run --rm --no-deps -T --entrypoint tar bmw-mqtt-bridge \
+  -C /app/token -czf - . > backups/token-volume.tar.gz
+tar -czf backups/config.tar.gz .env docker-compose.yml
+tar -tzf backups/token-volume.tar.gz
+docker compose start bmw-mqtt-bridge
+</syntaxhighlight>
+
+Prüfe nach jedem Befehl den Erfolg. Ein fehlgeschlagener Export kann eine leere Datei hinterlassen. Eigene Zertifikatsdateien zusätzlich sichern.
+
+Zum Wiederherstellen zuerst die Konfiguration zurückspielen und ein '''leeres''' Token-Volume verwenden. Die Bridge muss gestoppt sein. Der folgende Befehl schreibt in das konfigurierte Volume:
+<syntaxhighlight lang="bash">
+docker compose stop bmw-mqtt-bridge
+docker compose run --rm --no-deps -T --entrypoint tar bmw-mqtt-bridge \
+  -C /app/token -xzf - -o < backups/token-volume.tar.gz
+</syntaxhighlight>
+
+Prüfe Inhalt und Eigentümer vor dem Start. Für einen Restore-Test ein getrenntes Compose-Projekt benutzen und keine zweite Bridge mit echten wiederhergestellten Tokens starten. Ein älteres Token-Backup kann nach einer Tokenrotation eine erneute BMW-Anmeldung erfordern. <code>docker compose down -v</code> löscht das Volume.
+
+Weitere Grundlagen: [[Docker Backup und Restore - eine kleine Anleitung]].
+
+== Troubleshooting ==
+{| class="wikitable"
+! Problem !! Prüfen und beheben
+|-
+| Image lässt sich nicht laden || Existiert der Tag und ist das GHCR-Paket öffentlich? Ein Git-Tag und ein Image-Tag sind unterschiedlich: Image-Versionen haben kein führendes v.
+|-
+| Verbindung zum lokalen Broker fehlt || LAN-Adresse, Port, Benutzer, Passwort, Listener und ACLs prüfen. TLS wird ausdrücklich aktiviert, nicht allein durch Port 8883.
+|-
+| Anmeldung funktioniert, aber keine Fahrzeugdaten || CarData-Datenauswahl und BMW-Verbindung prüfen. Auf neue BMW-Nachrichten warten; die Bridge erzwingt keine neue Messung.
+|-
+| Keine Homie-Erkennung || BMB_MQTT_HOMIE prüfen, Container neu erstellen, homie/-ACLs und zusätzliche Homie-Verbindungslogs prüfen. Mindestens eine gültige Nachricht muss verarbeitet worden sein.
+|-
+| Widget leer oder zeigt — || Itemparameter und tatsächliche Rohzustände prüfen. Channels müssen mit passenden Items verknüpft sein. Zustandszuordnungen und Einheiten stehen in der Widget-Anleitung.
+|-
+| Konfigurationsänderung ohne Wirkung || docker compose up -d --force-recreate ausführen. Ein restart übernimmt keine neuen Umgebungsvariablen.
+|-
+| Unhealthy im ausführlichen Compose-Beispiel || Heartbeat und länger unterbrochene BMW-/Broker-Verbindung prüfen. Ein laufender Prozess kann unhealthy sein; Docker startet ihn dadurch nicht automatisch neu.
+|-
+| Tokenverzeichnis nicht beschreibbar || Rechte prüfen: Der Container läuft als UID/GID 10001:10001. Für alte root-eigene Volumes die dokumentierte Migration nach vorherigem Backup verwenden.
+|}
+
+Für eine kurze Fehlersuche kann <code>BMB_LOG_LEVEL=debug</code> helfen. Debuglogs können Fahrzeugdaten enthalten. Vor dem Teilen Tokens, VIN, Kontokennungen und Positionen entfernen. Sicherheitslücken über den privaten Meldekanal im Repository melden.
+
+== Quellen und weiterführende Anleitungen ==
+* [https://github.com/alaub81/bmw-mqtt-bridge BMW MQTT Bridge auf GitHub]
+* [https://github.com/alaub81/bmw-mqtt-bridge/blob/main/docs/configuration.md Konfiguration und MQTT-Ausgaben]
+* [https://github.com/alaub81/bmw-mqtt-bridge/blob/main/docs/operations.md Betrieb und Diagnosewerkzeuge]
+* [https://github.com/alaub81/bmw-mqtt-bridge/tree/main/openHAB Widget-Anleitungen und Importe]
+* [https://www.openhab.org/addons/bindings/homie/ openHAB Homie Binding]
+
+[[Kategorie:Docker]]
+[[Kategorie:MQTT]]
+[[Kategorie:OpenHAB]]
+[[Kategorie:SmartHome]]
