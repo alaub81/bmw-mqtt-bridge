@@ -52,7 +52,7 @@ services:
           test "$$local_offline" -ge 0 && test "$$bmw_offline" -ge 0 &&
           test "$$local_offline" -lt "$$BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT" &&
           test "$$bmw_offline" -lt "$$BMB_HEALTH_MQTT_DISCONNECT_TIMEOUT"
-      interval: 30s
+      interval: 120s
       timeout: 5s
       start_period: 30s
       retries: 3
