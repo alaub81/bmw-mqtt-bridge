@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -124,14 +125,30 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Verify non-root runtime and token-volume migration
         run: ./tests/container-hardening-check.sh bmw-mqtt-bridge:ci
-      - name: Trivy image scan
+      - name: Trivy Image (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bmw-mqtt-bridge:ci
+          format: sarif
+          output: trivy-ci.sarif
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+          ignore-unfixed: false
+          exit-code: '0'
+      - name: Trivy Image (gate)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: bmw-mqtt-bridge:ci
           format: table
-          severity: CRITICAL
+          severity: 'HIGH,CRITICAL'
           ignore-unfixed: true
           exit-code: '1'
+
+      - name: Upload Image SARIF
+        if: ${{ always() && github.event.repository.private == false && hashFiles('trivy-ci.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-ci.sarif
+          category: trivy-image-ci-bmw-mqtt-bridge
 
   tests:
     name: ${{ matrix.mode == 'standard' && 'Offline regression tests' || 'Sanitizer regression tests' }}
