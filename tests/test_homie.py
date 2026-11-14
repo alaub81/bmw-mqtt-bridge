@@ -543,7 +543,7 @@ int main(int argc, char** argv) {
 ''')
         cls.binary = cls.base / 'homie'
         subprocess.run(['c++', '-std=c++17', '-pthread', '-Wall', '-Wextra',
-                        '-I', str(ROOT / 'resources/src'), str(source), '-o', str(cls.binary)],
+                        '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'), str(source), '-o', str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     @classmethod

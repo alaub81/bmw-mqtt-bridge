@@ -21,7 +21,7 @@ class TokenValidationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.base = Path(cls.temp.name)
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         callback = source[source.index('static size_t curl_write_cb('):].split('// ===================== MQTT Callbacks')[0]
         refresh = source[source.rindex('static token_validation::Tokens fetch_and_store_tokens() {'):]
         options = sorted(set(re.findall(r'CURLOPT_[A-Z_]+', refresh)))
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
         path.write_text(harness)
         cls.binary = cls.base / 'refresh'
         result = subprocess.run(['c++', '-std=c++17', '-pthread', '-Wall', '-Wextra',
-                                 '-I', str(ROOT / 'resources/src'), str(path), '-o', str(cls.binary)],
+                                 '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'), str(path), '-o', str(cls.binary)],
                                 capture_output=True, text=True)
         if result.returncode:
             cls.temp.cleanup()

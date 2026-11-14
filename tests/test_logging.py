@@ -56,7 +56,7 @@ int main() {
 ''')
             binary = Path(directory) / 'logging'
             result = subprocess.run(['c++', '-std=c++17', '-pthread', '-Wall', '-Wextra',
-                                     '-I', str(ROOT / 'resources/src'), str(source), '-o', str(binary)],
+                                     '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'), str(source), '-o', str(binary)],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)

@@ -10,8 +10,8 @@ RUN apk add --no-cache \
     pkgconf
 
 WORKDIR /build
-COPY ./resources/src ./src
-COPY --chmod=0755 ./resources/compile.sh ./scripts/compile.sh
+COPY ./src ./src
+COPY --chmod=0755 ./compile.sh ./scripts/compile.sh
 RUN bash ./scripts/compile.sh
 
 FROM alpine:3.24
@@ -33,8 +33,8 @@ RUN addgroup -g 10001 bmb && adduser -D -H -u 10001 -G bmb bmb \
 WORKDIR /app
 COPY --chmod=0755 --from=builder /build/src/bmw_mqtt_bridge /app/bmw_mqtt_bridge
 COPY --chmod=0755 --from=builder /build/src/bmw_token_store /app/bmw_token_store
-COPY --chmod=0755 ./resources/bmw_flow.sh .
-COPY --chmod=0755 ./resources/docker-entrypoint.sh .
+COPY --chmod=0755 ./bmw_flow.sh .
+COPY --chmod=0755 ./docker-entrypoint.sh .
 
 ENV BMB_BMW_HOST=customer.streaming-cardata.bmwgroup.com \
     BMB_BMW_PORT=9000 \

@@ -4,7 +4,9 @@ services:
     extends:
       file: docker-compose.example.yml
       service: bmw-mqtt-bridge
-    build: .
+    build:
+      context: ./resources/bmw-mqtt-bridge
+      dockerfile: Dockerfile
     image: bmw-mqtt-bridge:dev
     pull_policy: build
 

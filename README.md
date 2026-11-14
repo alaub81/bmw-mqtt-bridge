@@ -86,3 +86,10 @@ use [.env.sample](.env.sample) for the full set of supported settings.
 ## License and credits
 
 [MIT](LICENSE). Original project by dj0abr; this fork is maintained by alaub81.
+
+Image build inputs live in `resources/bmw-mqtt-bridge/`, including the Dockerfile and
+its `.dockerignore`. Compose, runtime configuration and repository tooling remain
+outside the image context.
+The integration-test Dockerfiles keep their existing locations and
+repository-root contexts; their source paths follow the moved production sources.
+Release rebuilds also support the previous layout when building historical tags.

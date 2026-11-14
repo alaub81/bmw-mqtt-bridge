@@ -43,7 +43,7 @@ now cover local instructions, private archives, backups and measurements in both
 Git and Docker. The duplicate tracked `docker-compose.yml` is removed from the
 index only and remains locally; the canonical public deployment example is
 `docker-compose.example.yml`. Diagnostic tools remain in `tests/`, next to their
-regression tests; production scripts stay in `resources/`. The empty ignored
+regression tests; production scripts stay in `resources/bmw-mqtt-bridge/`. The empty ignored
 measurement directory contained no experiment data to archive. Local review
 outputs are retained under ignored `private/archive/2026-11-07/`.
 
@@ -61,7 +61,7 @@ forensic secret scan of every historical blob. No history was rewritten.
 - Native MainUI YAML editor paste/save, Homie discovery against a fresh real
   BMW stream and existing-version upgrades remain manual acceptance checks.
   File-based rendering and expression tests do not establish those paths.
-- No multi-day soak, amd64 build or Debian alternative build was run in this
+- No multi-day soak or amd64 build was run in this
   review. The local Docker host built arm64. CI defines the amd64 build check.
 - The release-notes workflow is linted but has not run on GitHub. It preserves
   existing releases, including empty/manual drafts, rather than overwriting text.

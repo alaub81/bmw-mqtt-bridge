@@ -31,16 +31,10 @@ jobs:
           .lint-venv/bin/python tests/install_lint_tools.py
           echo "$GITHUB_WORKSPACE/.lint-venv/bin" >> "$GITHUB_PATH"
           echo "$GITHUB_WORKSPACE/.lint-tools/bin" >> "$GITHUB_PATH"
-      - name: Hadolint Debian
-        uses: hadolint/hadolint-action@v3.5.0
-        with:
-          dockerfile: Dockerfile-Debian
-          config: .hadolint.yaml
-          failure-threshold: warning
       - name: Hadolint Alpine
         uses: hadolint/hadolint-action@v3.5.0
         with:
-          dockerfile: Dockerfile
+          dockerfile: resources/bmw-mqtt-bridge/Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
       - name: ShellCheck
@@ -67,13 +61,13 @@ jobs:
         timeout-minutes: 3
         shell: bash
         run: |
-          mapfile -d '' sources < <(git ls-files -z '*.cpp' '*.cc' '*.cxx' '*.h' '*.hpp' ':(exclude)resources/src/json.hpp')
+          mapfile -d '' sources < <(git ls-files -z '*.cpp' '*.cc' '*.cxx' '*.h' '*.hpp' ':(exclude)resources/bmw-mqtt-bridge/src/json.hpp')
           test "${#sources[@]}" -gt 0
           cppcheck --std=c++17 --check-level=normal --report-progress \
             --enable=warning,performance,portability --error-exitcode=1 \
             --inline-suppr --max-configs=1 --suppress=missingIncludeSystem \
             --suppress=toomanyconfigs --suppress=normalCheckLevelMaxBranches \
-            '--suppress=*:resources/src/json.hpp' "${sources[@]}"
+            '--suppress=*:resources/bmw-mqtt-bridge/src/json.hpp' "${sources[@]}"
       - name: Markdown
         shell: bash
         run: |
@@ -114,8 +108,8 @@ jobs:
       - name: Build bridge image
         uses: docker/build-push-action@v7
         with:
-          context: .
-          file: Dockerfile
+          context: resources/bmw-mqtt-bridge
+          file: resources/bmw-mqtt-bridge/Dockerfile
           platforms: linux/amd64
           load: true
           push: false

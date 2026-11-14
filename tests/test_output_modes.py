@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
 class OutputModeTests(unittest.TestCase):
     def test_raw_split_homie_and_retain_combinations(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         callback = source[source.index('static void on_bmw_message('):]
         callback = callback.split('// Log MQTT failures')[0]
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,7 +99,7 @@ int main() {
 }
 ''')
             binary = base / 'outputs'
-            compiled = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-I', str(ROOT / 'resources/src'),
+            compiled = subprocess.run(['c++', '-include', str(ROOT / 'resources/bmw-mqtt-bridge/src/bridge_log.hpp'), '-std=c++17', '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'),
                                        str(path), '-o', str(binary)], text=True, capture_output=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             result = subprocess.run([str(binary)], text=True, capture_output=True, timeout=15)

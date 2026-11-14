@@ -21,7 +21,7 @@ class DockerConfigurationTests(unittest.TestCase):
         self.env = dict(os.environ, BMB_BMW_TOKEN_DIR=str(self.state))
         # Replace only the final binary execution with a harmless sentinel.
         # All bootstrap and validation logic is the production entrypoint.
-        script = (ROOT / 'resources/docker-entrypoint.sh').read_text()
+        script = (ROOT / 'resources/bmw-mqtt-bridge/docker-entrypoint.sh').read_text()
         self.entrypoint = self.base / 'entrypoint.sh'
         self.entrypoint.write_text(script.replace(
             'exec /app/bmw_mqtt_bridge', 'echo bridge-started'))
@@ -126,7 +126,7 @@ class DockerConfigurationTests(unittest.TestCase):
 
     def test_authentication_uses_environment_without_creating_env_file(self):
         # Stop before the network exchange; exercise configuration and ID validation.
-        script = (ROOT / 'resources/bmw_flow.sh').read_text()
+        script = (ROOT / 'resources/bmw-mqtt-bridge/bmw_flow.sh').read_text()
         script = script.split('# ---------- Static OAuth config ----------')[0]
         script += '\nprintf "%s:%s:%s\\n" "$BMB_BMW_CLIENT_ID" "$BMB_BMW_GCID" "$OUT_DIR"\n'
         self.state.mkdir(parents=True)
@@ -200,14 +200,16 @@ class DockerConfigurationTests(unittest.TestCase):
         host = self.compose_service()
         development = self.compose_service('docker-compose.dev.yml', BMB_VERSION='1.2.3')
         self.assertEqual(development.pop('image'), 'bmw-mqtt-bridge:dev')
-        self.assertEqual(development.pop('build')['context'], str(ROOT))
+        build = development.pop('build')
+        self.assertEqual(build['context'], str(ROOT / 'resources/bmw-mqtt-bridge'))
+        self.assertEqual(build['dockerfile'], 'Dockerfile')
         self.assertEqual(development.pop('pull_policy'), 'build')
         self.assertEqual(host.pop('image'), 'ghcr.io/alaub81/bmw-mqtt-bridge:latest')
         self.assertEqual(host, development)
         self.assertNotIn('extra_hosts', host)
 
     def test_authentication_ignores_valid_credentials_in_old_env_file(self):
-        script = (ROOT / 'resources/bmw_flow.sh').read_text()
+        script = (ROOT / 'resources/bmw-mqtt-bridge/bmw_flow.sh').read_text()
         script = script.split('# ---------- Static OAuth config ----------')[0]
         self.state.mkdir(parents=True)
         config = self.state / '.env'
@@ -222,7 +224,7 @@ class DockerConfigurationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
     def test_cpp_environment_helpers_validate_numbers_and_switches(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         helpers = source.split('// ---------------------- tiny helpers for env config ----------------------')[1]
         helpers = helpers.split('// ===================== Configuration =====================')[0]
         directory_helper = source[source.index('static std::string token_dir() {'):]

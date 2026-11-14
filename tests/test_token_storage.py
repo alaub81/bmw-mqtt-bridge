@@ -16,8 +16,8 @@ class TokenStorageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.build = tempfile.TemporaryDirectory()
         cls.binary = Path(cls.build.name) / 'bmw_token_store'
-        subprocess.run(['c++', '-std=c++17', '-pthread', '-I', str(ROOT / 'resources/src'),
-                        str(ROOT / 'resources/src/bmw_token_store.cpp'), '-o', str(cls.binary)],
+        subprocess.run(['c++', '-std=c++17', '-pthread', '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'),
+                        str(ROOT / 'resources/bmw-mqtt-bridge/src/bmw_token_store.cpp'), '-o', str(cls.binary)],
                        check=True, capture_output=True)
 
     @classmethod
@@ -32,7 +32,7 @@ class TokenStorageTests(unittest.TestCase):
         self.mock_bin.mkdir()
         self.state = self.base / 'state'
         self.flow = self.base / 'bmw_flow.sh'
-        shutil.copyfile(ROOT / 'resources/bmw_flow.sh', self.flow)
+        shutil.copyfile(ROOT / 'resources/bmw-mqtt-bridge/bmw_flow.sh', self.flow)
         shutil.copy(self.binary, self.base / 'bmw_token_store')
         self.tokens = {'access_token': 'new-access', 'id_token': 'new-id',
                        'refresh_token': 'new-refresh'}
@@ -138,7 +138,7 @@ esac
 
     @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
     def test_refresh_writer_restricts_permissions_and_preserves_failed_target(self):
-        source = (ROOT / 'resources/src/atomic_file.hpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/atomic_file.hpp').read_text()
         helper = source[source.index('static bool write_file_atomic('):]
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -227,7 +227,7 @@ int main(int argc, char** argv) {
 }
 ''')
             binary = base / 'writer-test'
-            subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', str(test_source), '-o', str(binary)],
+            subprocess.run(['c++', '-include', str(ROOT / 'resources/bmw-mqtt-bridge/src/bridge_log.hpp'), '-std=c++17', str(test_source), '-o', str(binary)],
                            check=True, capture_output=True)
             result = subprocess.run([str(binary), str(base / 'token')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

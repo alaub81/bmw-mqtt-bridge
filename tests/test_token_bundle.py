@@ -15,7 +15,7 @@ class TokenBundleTests(unittest.TestCase):
         cls.base = Path(cls.temp.name)
         source = cls.base / 'store.cpp'
         # Inject crashes immediately before/after the actual commit syscall.
-        atomic = (ROOT / 'resources/src/atomic_file.hpp').read_text()
+        atomic = (ROOT / 'resources/bmw-mqtt-bridge/src/atomic_file.hpp').read_text()
         atomic = atomic[atomic.index('static bool write_file_atomic('):]
         source.write_text(r'''
 #include <cassert>
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.binary = cls.base / 'store'
-        subprocess.run(['c++', '-std=c++17', '-pthread', '-I', str(ROOT / 'resources/src'),
+        subprocess.run(['c++', '-std=c++17', '-pthread', '-I', str(ROOT / 'resources/bmw-mqtt-bridge/src'),
                         str(source), '-o', str(cls.binary)], check=True, capture_output=True)
 
     @classmethod

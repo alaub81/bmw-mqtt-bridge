@@ -144,7 +144,7 @@ user and writable token volume. No automatic root bootstrap runs on startup.
 Verify the image with a disposable volume (no deployment tokens are used):
 
 ```bash
-docker build -t bmw-mqtt-bridge:hardening-test .
+docker build -t bmw-mqtt-bridge:hardening-test resources/bmw-mqtt-bridge
 ./tests/container-hardening-check.sh
 ```
 
@@ -837,7 +837,7 @@ caches, without changing the cache format or discovery ordering.
 Known fields have concise English labels, such as **Hood open**, **Fuel level** and
 **Tire pressure — front left**. Unknown fields receive a readable label from their
 complete field path, so new BMW fields do not require a mapping entry. The label
-mapping is maintained in `resources/src/homie_names.hpp`; the cache retains the
+mapping is maintained in `resources/bmw-mqtt-bridge/src/homie_names.hpp`; the cache retains the
 original BMW field name as its key.
 
 Each vehicle also exposes **Last update** at

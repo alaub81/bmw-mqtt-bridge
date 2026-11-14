@@ -27,7 +27,7 @@ docker compose -f docker-compose.dev.yml logs -f bmw-mqtt-bridge
 `docker-compose.dev.yml` inherits the runtime settings, healthcheck and token
 mount from `docker-compose.example.yml` through
 [Compose extends](https://docs.docker.com/compose/how-tos/multiple-compose-files/extends/).
-It builds the local `Dockerfile` as `bmw-mqtt-bridge:dev` with `pull_policy: build`,
+It builds the local `resources/bmw-mqtt-bridge/Dockerfile` as `bmw-mqtt-bridge:dev` with `pull_policy: build`,
 so development uses your working tree regardless of `BMB_VERSION`. Only the
 top-level volume declaration is repeated because `extends` does not inherit it.
 Always include `-f docker-compose.dev.yml` for development commands, including
@@ -103,7 +103,7 @@ installed dependencies are excluded, so the check does not inspect local secrets
 | `.env.sample` | Assignment syntax and duplicate keys; no shell execution |
 | Markdown documentation and issue templates | PyMarkdown |
 
-The vendored `resources/src/json.hpp` receives text encoding/newline/merge-marker
+The vendored `resources/bmw-mqtt-bridge/src/json.hpp` receives text encoding/newline/merge-marker
 checks and is parsed as an include during C++ analysis. Its upstream formatting
 and standalone third-party lint diagnostics are preserved. Markdown allows two
 trailing spaces for hard line breaks. PNG and JPEG assets receive a matching image-signature check, not text decoding.
@@ -114,7 +114,7 @@ common text checks; new programming languages should get a dedicated linter.
 
 Rule settings live in `.hadolint.yaml`, `.yamllint.yaml`, `.pymarkdown.yaml`
 and `ruff.toml`.
-Hadolint permits unpinned Debian and Alpine package versions so security updates can follow
+Hadolint permits unpinned Alpine package versions so security updates can follow
 the selected distribution; other warnings fail the check. Markdown permits long
 lines, embedded HTML, bold labels and flexible table alignment to retain the
 existing documentation style. PyMarkdown runs in the existing Python environment
@@ -137,7 +137,7 @@ image and scans it with Trivy. The offline regression suite remains a separate
 job using `./tests/test-check.sh`.
 
 `.github/workflows/release.yml` builds and publishes only this project's
-`Dockerfile` to `ghcr.io/<repository-owner>/bmw-mqtt-bridge` for `linux/amd64`
+`resources/bmw-mqtt-bridge/Dockerfile` to `ghcr.io/<repository-owner>/bmw-mqtt-bridge` for `linux/amd64`
 and `linux/arm64`. Push a stable version tag to release a container:
 
 ```bash

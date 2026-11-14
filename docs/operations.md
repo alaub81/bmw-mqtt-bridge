@@ -81,8 +81,8 @@ these formats separate from widget YAML and configuration files.
 
 | Tool | Parameters and effect | Limits |
 | --- | --- | --- |
-| `resources/bmw_flow.sh` | Environment from Compose; interactive BMW device login, writes token bundle | Stop bridge first; rotates credentials, not a read-only diagnostic |
-| `resources/compile.sh` | Builds both C++ binaries with warning errors | Build environment with Mosquitto/curl headers required |
+| `resources/bmw-mqtt-bridge/bmw_flow.sh` | Environment from Compose; interactive BMW device login, writes token bundle | Stop bridge first; rotates credentials, not a read-only diagnostic |
+| `resources/bmw-mqtt-bridge/compile.sh` | Builds both C++ binaries with warning errors | Build environment with Mosquitto/curl headers required |
 | `tests/resource_soak.py` | `--compose-file`, `--service` (default `bmw-mqtt-bridge`), `--bridge-version`, `--duration-seconds` (86400), `--interval-seconds` (60), `--output` (JSONL) | Read-only Linux host collector; cgroup v2 and matching `/proc` required; Docker Desktop unsupported |
 | `tests/summarize_soak.py` | Positional JSONL file; JSON summary to stdout | No Docker access; rejects malformed/out-of-order schema v2 samples; missing metrics stay null |
 | `tests/linter-check.sh` | No supported parameters; runs all lint checks | No fixes; needs pinned tools, no BMW connection |

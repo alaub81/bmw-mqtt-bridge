@@ -14,7 +14,7 @@ class BmwReconnectTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temp.cleanup)
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         helpers = source[source.index('static long long bmw_clock_ms('):]
         helpers = helpers.split('// Debounced status publisher')[0]
         # Drive the production monotonic clock without sleeping or changing system time.
@@ -211,7 +211,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.binary = Path(cls.temp.name) / 'bmw-reconnect'
-        subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
+        subprocess.run(['c++', '-include', str(ROOT / 'resources/bmw-mqtt-bridge/src/bridge_log.hpp'), '-std=c++17', '-pthread', str(path), '-o', str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     def run_scenarios(self, scenarios):

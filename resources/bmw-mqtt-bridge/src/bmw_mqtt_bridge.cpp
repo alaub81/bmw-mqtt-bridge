@@ -38,7 +38,7 @@
 //   - Backoff (incl. jitter) to avoid quota/rate-limit storms
 //   - LWT on local broker + status topic
 //
-// Built in the Docker builder stage using resources/compile.sh.
+// Built in the Docker builder stage using resources/bmw-mqtt-bridge/compile.sh.
 //
 // Runtime configuration (env overrides):
 //   BMB_BMW_CLIENT_ID         : BMW CarData client ID (GUID)              (required; no default)

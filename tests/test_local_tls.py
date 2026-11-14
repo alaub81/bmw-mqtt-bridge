@@ -13,7 +13,7 @@ class LocalTlsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         env_helpers = source.split('// ---------------------- tiny helpers for env config ----------------------')[1]
         env_helpers = env_helpers.split('// ===================== Configuration =====================')[0]
         tls_setup = source.split('// BMB_MQTT_LOCAL_TLS_VERIFY controls both chain and hostname verification.')[1]
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.binary = Path(cls.temp.name) / 'tls-test'
-        result = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', str(path), '-o', str(cls.binary)],
+        result = subprocess.run(['c++', '-include', str(ROOT / 'resources/bmw-mqtt-bridge/src/bridge_log.hpp'), '-std=c++17', str(path), '-o', str(cls.binary)],
                                 capture_output=True, text=True)
         if result.returncode:
             cls.temp.cleanup()

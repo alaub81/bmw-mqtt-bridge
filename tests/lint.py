@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR_HEADER = "resources/src/json.hpp"
+VENDOR_HEADER = "resources/bmw-mqtt-bridge/src/json.hpp"
 
 
 def project_files():

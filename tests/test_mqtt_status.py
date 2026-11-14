@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
 class MqttStatusTests(unittest.TestCase):
     def test_status_connection_and_retry_handling(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         publisher = source.split('// Debounced status publisher for MQTT_LOCAL_STATUS_TOPIC')[1]
         publisher = publisher.split('static std::string sanitize_key')[0]
         callbacks = source.split('static void on_local_connect')[1]
@@ -166,8 +166,8 @@ int main(int argc, char** argv) {
 
 ''')
             binary = Path(temporary) / 'status-test'
-            result = subprocess.run(['c++', '-include', str(ROOT / 'resources/src/bridge_log.hpp'), '-std=c++17', '-pthread', '-I',
-                                     str(ROOT / 'resources/src'), str(path),
+            result = subprocess.run(['c++', '-include', str(ROOT / 'resources/bmw-mqtt-bridge/src/bridge_log.hpp'), '-std=c++17', '-pthread', '-I',
+                                     str(ROOT / 'resources/bmw-mqtt-bridge/src'), str(path),
                                      '-o', str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             for scenario in ('output-modes', 'offline', 'rejected', 'retry', 'reconnect', 'delayed-local',
@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
                     self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_shutdown_keeps_network_loop_alive_until_status_confirmation(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         cleanup = source.split('// Cleanup')[1].split('mosquitto_lib_cleanup();')[0]
         self.assertLess(cleanup.index('mosquitto_loop_stop(g_bmw'),
                         cleanup.index('publish_shutdown_status()'))

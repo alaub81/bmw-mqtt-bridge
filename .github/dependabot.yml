@@ -17,7 +17,9 @@ updates:
 
   # 2) Docker (Dockerfiles + docker-compose.*)
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/resources/bmw-mqtt-bridge"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -29,16 +31,8 @@ updates:
     commit-message:
       prefix: "deps(docker)"
       include: "scope"
-    # Optional: limit major version updates; adjust for this repository as needed
-    # ignore:
-    #   - dependency-name: "debian"
-    #     update-types: ["version-update:semver-major"]
-    #   - dependency-name: "ubuntu"
-    #     update-types: ["version-update:semver-major"]
     # Group updates to avoid a separate PR for each dependency
     groups:
-      debian-ubuntu-base:
-        patterns: ["debian", "ubuntu"]
       minimalist-base:
         patterns: ["alpine", "busybox"]
       ghcr-images:

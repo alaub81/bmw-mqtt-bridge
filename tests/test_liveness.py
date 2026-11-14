@@ -89,7 +89,7 @@ class LivenessTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('c++'), 'C++ compiler unavailable')
     def test_production_heartbeat_writer(self):
-        source = (ROOT / 'resources/src/bmw_mqtt_bridge.cpp').read_text()
+        source = (ROOT / 'resources/bmw-mqtt-bridge/src/bmw_mqtt_bridge.cpp').read_text()
         helper = source.split('// Health telemetry: main-loop liveness and continuous MQTT downtime.')[1]
         helper = helper.split('// helper: simple placeholder check')[0]
         with tempfile.TemporaryDirectory() as temporary:
